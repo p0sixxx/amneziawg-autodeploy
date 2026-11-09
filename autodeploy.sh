@@ -148,6 +148,13 @@ random_port() {
     return 1
 }
 
+# скачать файл репозитория; для приватного репозитория — GH_TOKEN (fine-grained, только Contents: read)
+repo_get() { # repo_get <путь в репо> <куда>
+    local auth=()
+    [[ -n "${GH_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer ${GH_TOKEN}")
+    curl -fsSL --max-time 120 "${auth[@]}" -o "$2" "$AD_REPO_RAW/$AD_REF/$1"
+}
+
 # ------------------------------------------------------------------ состояние
 state_save() {
     mkdir -p "$AD_DIR"; chmod 700 "$AD_DIR"
@@ -172,7 +179,7 @@ self_install() { # копия обёртки в /usr/local/sbin, чтобы пр
     if [[ -f "$src" && "$src" != "$AD_BIN" ]]; then
         install -m 700 "$src" "$AD_BIN"
     elif [[ ! -x "$AD_BIN" ]]; then
-        curl -fsSL --max-time 60 -o "$AD_BIN.new" "$AD_REPO_RAW/$AD_REF/autodeploy.sh" && chmod 700 "$AD_BIN.new" && mv -f "$AD_BIN.new" "$AD_BIN" \
+        repo_get autodeploy.sh "$AD_BIN.new" && chmod 700 "$AD_BIN.new" && mv -f "$AD_BIN.new" "$AD_BIN" \
             || die "Не удалось сохранить обёртку в $AD_BIN"
     fi
 }
@@ -317,7 +324,8 @@ fetch_installer() {
     if [[ -f "$src" && "$src" != "$f" && -d "$dir/.git" && -f "$dir/AUDIT.md" ]]; then
         cp -f "$src" "$f.new"
     else
-        curl -fsSL --max-time 120 -o "$f.new" "$AD_REPO_RAW/$AD_REF/install_amneziawg.sh" || die "Не удалось скачать install_amneziawg.sh"
+        repo_get install_amneziawg.sh "$f.new" \
+            || die "Не удалось скачать install_amneziawg.sh (404 — репозиторий приватный? задай GH_TOKEN=… или сделай его публичным)"
     fi
     local got; got=$(sha256sum "$f.new" | awk '{print $1}')
     if [[ "$INSTALLER_SHA256" != "__INSTALLER_SHA256__" && "$got" != "$INSTALLER_SHA256" ]]; then

@@ -18,6 +18,9 @@
 > bash /root/awg-autodeploy.sh --clients=phone,laptop    # установка (3.1)
 > bash /root/awg-autodeploy.sh --protocol=2.0            # отдельный сервер 2.0: GL.iNet на штатной прошивке, Hiddify
 > ```
+> Приватный репозиторий: создай fine-grained токен (только этот репозиторий, Contents: Read-only) и скачивай с ним:
+> `export GH_TOKEN=github_pat_…; curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o /root/awg-autodeploy.sh https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy/main/autodeploy.sh && bash /root/awg-autodeploy.sh` — токен нужен только на время установки, на сервере не сохраняется.
+>
 > Сервер 1–2 раза перезагрузится — установка продолжится сама. Через 3–5 минут: `awg-autodeploy status`, затем `awg-autodeploy check`.
 >
 > Клиенты: `bash /root/awg/manage_amneziawg.sh add|remove|list|qr|backup|restore|check|diagnose` (описание ниже, в оригинальном README).
