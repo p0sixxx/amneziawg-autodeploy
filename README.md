@@ -6,7 +6,7 @@
 
 ## Установка
 
-Чистый VPS: Ubuntu 24.04 или Debian 13, KVM (не контейнер), от 1 ядра и 1 ГБ RAM.
+Чистый VPS: Ubuntu 24.04, 26.04 или Debian 13, KVM (не контейнер), от 1 ядра и 1 ГБ RAM.
 
 ```bash
 curl -fsSLo /root/awgctl https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy/main/awgctl

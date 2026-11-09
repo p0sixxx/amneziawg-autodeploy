@@ -247,7 +247,7 @@ preflight() {
     . /etc/os-release
     id=$ID; ver=$VERSION_ID
     case "$id:$ver" in
-        ubuntu:24.04|debian:13) ok "ОС: $PRETTY_NAME" ;;
+        ubuntu:24.04|ubuntu:26.04|debian:13) ok "ОС: $PRETTY_NAME" ;;
         ubuntu:22.04|ubuntu:25.*|debian:12) warn "ОС $PRETTY_NAME: установщик её поддерживает, но обёртка проверена на Ubuntu 24.04 и Debian 13" ;;
         *) die "ОС $PRETTY_NAME не поддерживается. Нужна Ubuntu 24.04 LTS или Debian 13." ;;
     esac
