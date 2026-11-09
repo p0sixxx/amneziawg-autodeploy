@@ -15,4 +15,5 @@ manage_amneziawg.sh
 manage_amneziawg_en.sh
 awg_common.sh
 awg_common_en.sh
+autodeploy.sh
 EOF

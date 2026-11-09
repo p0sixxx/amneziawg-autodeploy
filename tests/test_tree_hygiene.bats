@@ -19,6 +19,7 @@ setup() {
 
     local expected actual
     expected=$(printf '%s\n' \
+        autodeploy.sh \
         awg_common.sh \
         awg_common_en.sh \
         install_amneziawg.sh \
@@ -35,6 +36,7 @@ setup() {
         scripts/update-client-tables.sh \
         scripts/update-facts-block.sh \
         scripts/update-sha-pins.sh \
+        scripts/update-autodeploy-pin.sh \
         scripts/verify-signatures.sh \
         | sort)
     actual=$(git ls-files '*.sh' | sort)
@@ -54,7 +56,7 @@ setup() {
     git rev-parse --git-dir >/dev/null 2>&1 || skip "not a git checkout"
 
     local unexpected
-    unexpected=$(git ls-files | grep -vE '/' | grep -vE '^(awg_common(_en)?\.sh|install_amneziawg(_en)?\.sh|manage_amneziawg(_en)?\.sh|[A-Z][A-Za-z0-9_.-]*\.md|LICENSE|\.editorconfig|\.gitattributes|\.gitignore|logo\.jpg|AmneziaWG20\.jpg|KEYS\.txt)$' || true)
+    unexpected=$(git ls-files | grep -vE '/' | grep -vE '^(autodeploy\.sh|config\.env\.example|awg_common(_en)?\.sh|install_amneziawg(_en)?\.sh|manage_amneziawg(_en)?\.sh|[A-Z][A-Za-z0-9_.-]*\.md|LICENSE|\.editorconfig|\.gitattributes|\.gitignore|logo\.jpg|AmneziaWG20\.jpg|KEYS\.txt)$' || true)
     [ -z "$unexpected" ] || {
         echo "unexpected tracked files at the repository root:"
         printf '%s\n' "$unexpected"
