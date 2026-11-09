@@ -110,11 +110,13 @@ STUB
 }
 
 @test "установщик: безопасные и быстрые флаги, движок с SHA256" {
-    PORT=40000; PROTOCOL=3.1; MOBILE=0; ENDPOINT=""; KEEP_PKGS=0; KEEP_IPV6=0; EXTRA=()
+    PORT=40000; PROTOCOL=3.1; MOBILE=0; ENDPOINT=""; SRV_NAME=""; KEEP_PKGS=0; KEEP_IPV6=0; EXTRA=()
     installer_args
     [[ " ${INST_ARGS[*]} " == *" --yes "* && " ${INST_ARGS[*]} " == *" --no-prebuilt "* ]]
     [[ " ${INST_ARGS[*]} " == *" --disallow-ipv6 "* ]]
     [[ " ${INST_ARGS[*]} " != *" --keep-packages "* ]]
+    SRV_NAME="Nebula Sweden"; installer_args
+    [[ " ${INST_ARGS[*]} " == *" --server-name=Nebula Sweden "* ]]
     KEEP_PKGS=1; KEEP_IPV6=1; installer_args
     [[ " ${INST_ARGS[*]} " == *" --keep-packages "* && " ${INST_ARGS[*]} " == *" --allow-ipv6 "* ]]
     [[ "$ENGINE_SHA256" =~ ^[0-9a-f]{64}$ ]]

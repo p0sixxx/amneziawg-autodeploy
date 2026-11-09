@@ -10,7 +10,7 @@
 
 ```bash
 curl -fsSLo /root/awgctl https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy/main/awgctl
-bash /root/awgctl install --clients=phone,laptop
+bash /root/awgctl install --name="Nebula Sweden" --clients=phone,laptop
 ```
 
 Вопросов нет. Сервер 1–2 раза перезагрузится, установка продолжится сама. Через 3–5 минут зайди по SSH:
@@ -34,6 +34,7 @@ awgctl show phone # QR и ссылка vpn://
 | Параметр | Что |
 |---|---|
 | `--dry-run` | только проверки и план |
+| `--name="Nebula Sweden"` | имя сервера в приложениях Amnezia (по умолчанию «AWG Server») |
 | `--clients=a,b` | пользователи сразу (иначе `my_phone`, `my_laptop`) |
 | `--port=N` | свой порт вместо случайного |
 | `--mobile` | 443/udp и пресет для мобильных операторов |

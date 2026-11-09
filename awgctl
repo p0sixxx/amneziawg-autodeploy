@@ -46,7 +46,7 @@ trap 'rc=$?; [[ $rc -ne 0 ]] && printf "Ошибка в строке %s (код 
 # ------------------------------------------------------------------ аргументы
 CMD=""; POS=(); DRY_RUN=0; AUTO_YES=0; PORT="${PORT:-}"; MOBILE="${MOBILE:-0}"; PROTOCOL="${PROTOCOL:-3.1}"
 ENDPOINT="${ENDPOINT:-}"; CLIENTS="${CLIENTS:-}"; ALLOW_BLOCKED="${ALLOW_BLOCKED:-0}"; SKIP_EXT="${SKIP_EXTERNAL_CHECK:-0}"
-DAYS=""; PSK=0; KEEP_PKGS="${KEEP_PACKAGES:-0}"; KEEP_IPV6="${KEEP_IPV6:-0}"; EXTRA=()
+SRV_NAME="${SERVER_NAME:-}"; DAYS=""; PSK=0; KEEP_PKGS="${KEEP_PACKAGES:-0}"; KEEP_IPV6="${KEEP_IPV6:-0}"; EXTRA=()
 if [[ "${1:-}" == engine ]]; then CMD=engine; shift; EXTRA=("$@"); set --; fi   # всё дальше — как есть в manage_amneziawg.sh
 while (($#)); do
     case "$1" in
@@ -57,6 +57,7 @@ while (($#)); do
         --protocol=*) PROTOCOL=${1#*=} ;;
         --endpoint=*) ENDPOINT=${1#*=} ;;
         --clients=*) CLIENTS=${1#*=} ;;
+        --name=*) SRV_NAME=${1#*=} ;;
         --allow-blocked-ip) ALLOW_BLOCKED=1 ;;
         --skip-external-check) SKIP_EXT=1 ;;
         --days=*) DAYS=${1#*=} ;;
@@ -78,7 +79,7 @@ usage() {
 awgctl — AmneziaWG: установка и управление пользователями
 
 Установка
-  awgctl install [--dry-run] [--port=N | --mobile] [--protocol=3.1|2.0] [--clients=a,b]
+  awgctl install [--dry-run] [--name="Имя"] [--port=N | --mobile] [--protocol=3.1|2.0] [--clients=a,b]
                  [--endpoint=АДРЕС] [--keep-packages] [--keep-ipv6] [--allow-blocked-ip] [--skip-external-check]
                  без вопросов: случайный порт, IPv6 хоста выключен, лишние пакеты удаляются
                  [-- флаги install_amneziawg.sh]
@@ -189,7 +190,7 @@ repo_get() { # repo_get <путь в репо> <куда>
 state_save() {
     mkdir -p "$AD_DIR"; chmod 700 "$AD_DIR"
     {
-        printf 'PORT=%q\nPROTOCOL=%q\nENDPOINT=%q\nCLIENTS=%q\nMOBILE=%q\nKEEP_PKGS=%q\nKEEP_IPV6=%q\n' "$PORT" "$PROTOCOL" "$ENDPOINT" "$CLIENTS" "$MOBILE" "$KEEP_PKGS" "$KEEP_IPV6"
+        printf 'PORT=%q\nPROTOCOL=%q\nENDPOINT=%q\nCLIENTS=%q\nMOBILE=%q\nKEEP_PKGS=%q\nKEEP_IPV6=%q\nSRV_NAME=%q\n' "$PORT" "$PROTOCOL" "$ENDPOINT" "$CLIENTS" "$MOBILE" "$KEEP_PKGS" "$KEEP_IPV6" "$SRV_NAME"
         printf 'EXTRA=('; printf '%q ' "${EXTRA[@]+"${EXTRA[@]}"}"; printf ')\n'
         printf 'PUBLIC_IP=%q\n' "${PUBLIC_IP:-}"
     } >"$AD_STATE.tmp"
@@ -365,6 +366,7 @@ installer_args() {
     if [[ "$KEEP_IPV6" == 1 ]]; then INST_ARGS+=(--allow-ipv6); else INST_ARGS+=(--disallow-ipv6); fi
     [[ "$MOBILE" == 1 ]] && INST_ARGS+=(--preset=mobile)
     [[ -n "$ENDPOINT" ]] && INST_ARGS+=("--endpoint=$ENDPOINT")
+    [[ -n "$SRV_NAME" ]] && INST_ARGS+=("--server-name=$SRV_NAME")
     INST_ARGS+=("${EXTRA[@]+"${EXTRA[@]}"}")
 }
 
@@ -641,6 +643,9 @@ do_install() {
     mkdir -p "$(dirname "$AD_LOG")"; touch "$AD_LOG"; chmod 600 "$AD_LOG"
     log "amneziawgctl v${AD_VERSION} ($(date '+%F %T'))"
     case "$PROTOCOL" in 3.1|2.0) ;; *) die "--protocol: 3.1 или 2.0" ;; esac
+    if [[ -n "$SRV_NAME" ]]; then
+        [[ ${#SRV_NAME} -le 64 && "$SRV_NAME" != *[\"\'\\]* && ! "$SRV_NAME" =~ [[:cntrl:]] ]] || die "--name: до 64 символов, без кавычек и обратной косой черты"
+    fi
     command -v jq >/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq >/dev/null 2>&1; } || die "Не удалось поставить jq"; }
     preflight
 
@@ -654,6 +659,7 @@ do_install() {
     else log "       — удалит лишние службы (snapd, packagekit, modemmanager, udisks2, unattended-upgrades…) — как советует автор для 1 ГБ RAM"; fi
     if [[ "$KEEP_IPV6" == 1 ]]; then log "       — IPv6 на хосте оставит (--keep-ipv6)"; else log "       — отключит IPv6 на хосте"; fi
     log "       — 1–2 перезагрузки: после них установка продолжится сама (systemd awgctl-resume)."
+    log "       — имя сервера в приложении: ${SRV_NAME:-AWG Server (по умолчанию движка)}"
     log "    3. Клиенты: ${CLIENTS:-my_phone, my_laptop (по умолчанию установщика)}"
     log "    4. Итоговая проверка. Лог: $AD_LOG"
     if ((DRY_RUN)); then log ""; log "--dry-run: ничего не изменено."; exit 0; fi
