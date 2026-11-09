@@ -13,7 +13,7 @@ curl -fsSLo /root/awgctl https://raw.githubusercontent.com/p0sixxx/amneziawg-aut
 bash /root/awgctl install --name="Nebula Sweden" --clients=phone,laptop
 ```
 
-Вопросов нет. Сервер 1–2 раза перезагрузится, установка продолжится сама. Через 3–5 минут зайди по SSH:
+В начале скрипт спросит про два дополнения — блокировщик рекламы и Telegram-бот (ответы можно задать флагами, см. ниже). Других вопросов нет. Сервер 1–2 раза перезагрузится, установка продолжится сама. Через 3–5 минут зайди по SSH:
 
 ```bash
 awgctl status     # ход установки
@@ -41,6 +41,9 @@ awgctl show phone # QR и ссылка vpn://
 | `--protocol=2.0` | сервер для роутеров GL.iNet на штатной прошивке, Hiddify |
 | `--endpoint=АДРЕС` | адрес для клиентов (домен, NAT) |
 | `--keep-packages` / `--keep-ipv6` | не удалять службы / не выключать IPv6 |
+| `--adblock` | поставить DNS-блокировщик рекламы |
+| `--bot --tg-admins=ID` | поставить Telegram-бот (токен — переменной `AWGRAM_TOKEN=…` или спросит) |
+| `--no-extras` | без дополнений и без вопросов |
 | `--allow-blocked-ip` / `--skip-external-check` | ставить на IP, недоступный из РФ / не проверять |
 
 ## Пользователи
@@ -74,6 +77,14 @@ awgctl show phone # QR и ссылка vpn://
 |---|---|
 | SSH (текущий) /tcp | не меняется, разрешается в ufw до включения |
 | случайный 20000–59999 /udp (или 443) | AmneziaWG |
+
+## Дополнения
+
+Спрашиваются в начале `install` (после перезагрузок спросить уже не у кого) и ставятся в конце. Потом — отдельными командами.
+
+**Блокировка рекламы по DNS** — `awgctl adblock on|off|status`. [Blocky](https://github.com/0xERR0R/blocky) v0.34.0 (SHA256 закреплён) со списками Hagezi Pro + TIF; конфиг из [Cueuler/amneziawg_dns_adblock](https://github.com/Cueuler/amneziawg_dns_adblock) (закреплённый коммит). Слушает только адрес сервера внутри туннеля. DNS-запросы всех клиентов перенаправляются на него на сервере, поэтому **конфиги переимпортировать не нужно**, и действует даже на клиентов с прописанным 1.1.1.1. Не режет рекламу внутри YouTube и не работает, если в браузере включён «Безопасный DNS» (DoH).
+
+**Telegram-бот** — `awgctl bot`. [awgram](https://github.com/ekuraev/awgram) v0.13.2 (установщик закреплён по SHA256) в режиме hardened: отдельный пользователь, доступ только у указанных Telegram ID. Нужны токен от [@BotFather](https://t.me/BotFather) и свой ID от [@userinfobot](https://t.me/userinfobot). Пользователи, созданные в боте и в `awgctl`, видны и там и там; `awgctl off/on` бот не видит. Управление самим ботом — `awgram-setup status|update|uninstall`.
 
 Файлы: конфиги и QR — `/root/awg/`, сервер — `/etc/amnezia/amneziawg/awg0.conf`, awgctl — `/var/lib/awgctl/`, лог — `/var/log/awgctl.log`.
 

@@ -22,6 +22,16 @@ ENGINE_VER="6.2.1"
 ENGINE_URL="https://github.com/bivlked/amneziawg-installer/releases/download/v${ENGINE_VER}/install_amneziawg.sh"
 ENGINE_SHA256="75940a6c92c3734f7f8bc43d9f499b572b430144c79b7342a7bdc6f21969cf91"
 
+# Дополнения (ставятся по желанию в конце установки или командами awgctl adblock / awgctl bot)
+AWGRAM_VER="v0.13.2"   # https://github.com/ekuraev/awgram
+AWGRAM_SETUP_SHA256="a00410bee82a09aaaf143dec7e1e35f3bb3b6795a20f3908d2a3fc88580df14e"
+BLOCKY_VER="0.34.0"    # https://github.com/0xERR0R/blocky
+BLOCKY_SHA256_X86_64="17b03f892346a160e9faf974ce68baae85fa4f2a94d7bf8ea52592a94be5eeb4"
+BLOCKY_SHA256_ARM64="1a07aa52b127d75d15584706c76843b9fa3706be133b0d7b96b2ca65ba4f561f"
+# конфиг Blocky и списки — из github.com/Cueuler/amneziawg_dns_adblock (закреплённый коммит)
+ADBLOCK_REPO="https://raw.githubusercontent.com/Cueuler/amneziawg_dns_adblock/3db27d269031c4c7a33ec8968316bf0e2c70a004"
+ADBLOCK_FILES="config.yml:b2c8fef5cbc727390df9c2088207154a7bc502d54ce7e36533c4e0489c540e26 custom-deny.txt:a0f2a9566b0fb28bfe2aa8832ab15df0d6355e0edb69be72e23b4a6751274848 blocky.service:7845adb43b3e6823845e10f21a88ed54fa3993bb9fe7a57aed64539149dd4f1a"
+
 AD_DIR=/var/lib/awgctl
 AD_STATE="$AD_DIR/state.env"
 AD_LOG=/var/log/awgctl.log
@@ -46,7 +56,7 @@ trap 'rc=$?; [[ $rc -ne 0 ]] && printf "Ошибка в строке %s (код 
 # ------------------------------------------------------------------ аргументы
 CMD=""; POS=(); DRY_RUN=0; AUTO_YES=0; PORT="${PORT:-}"; MOBILE="${MOBILE:-0}"; PROTOCOL="${PROTOCOL:-3.1}"
 ENDPOINT="${ENDPOINT:-}"; CLIENTS="${CLIENTS:-}"; ALLOW_BLOCKED="${ALLOW_BLOCKED:-0}"; SKIP_EXT="${SKIP_EXTERNAL_CHECK:-0}"
-SRV_NAME="${SERVER_NAME:-}"; DAYS=""; PSK=0; KEEP_PKGS="${KEEP_PACKAGES:-0}"; KEEP_IPV6="${KEEP_IPV6:-0}"; EXTRA=()
+SRV_NAME="${SERVER_NAME:-}"; WANT_ADBLOCK=""; WANT_BOT=""; TG_TOKEN="${AWGRAM_TOKEN:-}"; TG_ADMINS=""; DAYS=""; PSK=0; KEEP_PKGS="${KEEP_PACKAGES:-0}"; KEEP_IPV6="${KEEP_IPV6:-0}"; EXTRA=()
 if [[ "${1:-}" == engine ]]; then CMD=engine; shift; EXTRA=("$@"); set --; fi   # всё дальше — как есть в manage_amneziawg.sh
 while (($#)); do
     case "$1" in
@@ -58,6 +68,10 @@ while (($#)); do
         --endpoint=*) ENDPOINT=${1#*=} ;;
         --clients=*) CLIENTS=${1#*=} ;;
         --name=*) SRV_NAME=${1#*=} ;;
+        --adblock) WANT_ADBLOCK=1 ;;
+        --bot) WANT_BOT=1 ;;
+        --tg-admins=*) TG_ADMINS=${1#*=}; WANT_BOT=1 ;;
+        --no-extras) WANT_ADBLOCK=0; WANT_BOT=0 ;;
         --allow-blocked-ip) ALLOW_BLOCKED=1 ;;
         --skip-external-check) SKIP_EXT=1 ;;
         --days=*) DAYS=${1#*=} ;;
@@ -81,7 +95,9 @@ awgctl — AmneziaWG: установка и управление пользов�
 Установка
   awgctl install [--dry-run] [--name="Имя"] [--port=N | --mobile] [--protocol=3.1|2.0] [--clients=a,b]
                  [--endpoint=АДРЕС] [--keep-packages] [--keep-ipv6] [--allow-blocked-ip] [--skip-external-check]
-                 без вопросов: случайный порт, IPv6 хоста выключен, лишние пакеты удаляются
+                 [--adblock] [--bot --tg-admins=ID] [--no-extras]
+                 случайный порт, IPv6 хоста выключен, лишние пакеты удаляются; в начале спросит
+                 про блокировщик рекламы и Telegram-бот (или задай флагами)
                  [-- флаги install_amneziawg.sh]
   awgctl status                  ход установки (после перезагрузок)
   awgctl resume                  продолжить прерванную установку
@@ -101,6 +117,10 @@ awgctl — AmneziaWG: установка и управление пользов�
   awgctl check                   проверка: сервис, порт, NAT, ufw, IP из России (check-host.net)
   awgctl backup | restore [файл] бэкап ключей и клиентов / восстановление
   awgctl uninstall               удалить AmneziaWG и awgctl
+
+Дополнения
+  awgctl adblock [on|off|status] блокировка рекламы и трекеров по DNS (Blocky + списки Hagezi)
+  awgctl bot                     Telegram-бот awgram: пользователи с телефона
   awgctl engine <команда …>      любая команда manage_amneziawg.sh (diagnose, stats, regen…)
   awgctl help
 HELP
@@ -190,7 +210,7 @@ repo_get() { # repo_get <путь в репо> <куда>
 state_save() {
     mkdir -p "$AD_DIR"; chmod 700 "$AD_DIR"
     {
-        printf 'PORT=%q\nPROTOCOL=%q\nENDPOINT=%q\nCLIENTS=%q\nMOBILE=%q\nKEEP_PKGS=%q\nKEEP_IPV6=%q\nSRV_NAME=%q\n' "$PORT" "$PROTOCOL" "$ENDPOINT" "$CLIENTS" "$MOBILE" "$KEEP_PKGS" "$KEEP_IPV6" "$SRV_NAME"
+        printf 'PORT=%q\nPROTOCOL=%q\nENDPOINT=%q\nCLIENTS=%q\nMOBILE=%q\nKEEP_PKGS=%q\nKEEP_IPV6=%q\nSRV_NAME=%q\nWANT_ADBLOCK=%q\nWANT_BOT=%q\nTG_TOKEN=%q\nTG_ADMINS=%q\n' "$PORT" "$PROTOCOL" "$ENDPOINT" "$CLIENTS" "$MOBILE" "$KEEP_PKGS" "$KEEP_IPV6" "$SRV_NAME" "$WANT_ADBLOCK" "$WANT_BOT" "$TG_TOKEN" "$TG_ADMINS"
         printf 'EXTRA=('; printf '%q ' "${EXTRA[@]+"${EXTRA[@]}"}"; printf ')\n'
         printf 'PUBLIC_IP=%q\n' "${PUBLIC_IP:-}"
     } >"$AD_STATE.tmp"
@@ -501,6 +521,18 @@ rules_apply() { # отключённые пользователи: DROP их т�
     fi
     iptables -C FORWARD -i awg0 -j AWGCTL 2>/dev/null || iptables -I FORWARD 1 -i awg0 -j AWGCTL
     iptables -C INPUT -i awg0 -j AWGCTL 2>/dev/null || iptables -I INPUT 1 -i awg0 -j AWGCTL
+    # DNS-блокировщик: все DNS-запросы клиентов — на Blocky (конфиги клиентов не меняются)
+    if [[ -s "$AD_DIR/adblock" ]]; then
+        local tip; tip=$(cat "$AD_DIR/adblock")
+        iptables -t nat -N AWGCTL_DNS 2>/dev/null || true
+        iptables -t nat -F AWGCTL_DNS
+        iptables -t nat -A AWGCTL_DNS -p udp --dport 53 -j DNAT --to-destination "${tip}:53"
+        iptables -t nat -A AWGCTL_DNS -p tcp --dport 53 -j DNAT --to-destination "${tip}:53"
+        iptables -t nat -C PREROUTING -i awg0 -j AWGCTL_DNS 2>/dev/null || iptables -t nat -I PREROUTING 1 -i awg0 -j AWGCTL_DNS
+    elif iptables -t nat -S AWGCTL_DNS >/dev/null 2>&1; then
+        iptables -t nat -D PREROUTING -i awg0 -j AWGCTL_DNS 2>/dev/null || true
+        iptables -t nat -F AWGCTL_DNS; iptables -t nat -X AWGCTL_DNS 2>/dev/null || true
+    fi
 }
 rules_persist() { # после перезагрузки и после ufw reload (он сбрасывает встроенные цепочки)
     cat >/etc/systemd/system/awgctl-rules.service <<UNIT
@@ -620,6 +652,14 @@ do_uninstall() {
     iptables -D FORWARD -i awg0 -j AWGCTL 2>/dev/null || true
     iptables -D INPUT -i awg0 -j AWGCTL 2>/dev/null || true
     iptables -F AWGCTL 2>/dev/null || true; iptables -X AWGCTL 2>/dev/null || true
+    if [[ -f /etc/systemd/system/blocky.service ]]; then
+        systemctl disable --now blocky >/dev/null 2>&1 || true
+        rm -rf /etc/systemd/system/blocky.service /opt/blocky /usr/local/bin/blocky
+        userdel blocky 2>/dev/null || true
+    fi
+    iptables -t nat -D PREROUTING -i awg0 -j AWGCTL_DNS 2>/dev/null || true
+    iptables -t nat -F AWGCTL_DNS 2>/dev/null || true; iptables -t nat -X AWGCTL_DNS 2>/dev/null || true
+    command -v awgram-setup >/dev/null && log "    Telegram-бот остался: удалить — awgram-setup uninstall --purge"
     rm -rf "$AD_DIR" /etc/cron.d/awgctl-rules /etc/systemd/system/awgctl-rules.service "$AD_BIN"
     systemctl daemon-reload || true
     log "AmneziaWG и awgctl удалены."
@@ -638,16 +678,161 @@ do_del() {
     log "Удалён: $n"
 }
 
+# ------------------------------------------------------------------ дополнения: DNS-блокировщик рекламы
+tunnel_ip() { ip -4 -o addr show dev awg0 2>/dev/null | awk '{print $4; exit}' | cut -d/ -f1; }
+
+fetch_pinned() { # fetch_pinned <url> <куда> <sha256>
+    curl -fsSL --max-time 120 -o "$2.new" "$1" || { rm -f "$2.new"; return 1; }
+    [[ "$(sha256sum "$2.new" | awk '{print $1}')" == "$3" ]] || { rm -f "$2.new"; warn "SHA256 не совпал: $1"; return 1; }
+    mv -f "$2.new" "$2"
+}
+
+adblock_on() {
+    need_installed
+    hdr "DNS-блокировщик рекламы (Blocky v${BLOCKY_VER} + списки Hagezi)"
+    local tip arch sha tmp f name want
+    tip=$(tunnel_ip); [[ -n "$tip" ]] || die "Интерфейс awg0 не поднят — нечего защищать"
+    case "$(uname -m)" in
+        x86_64) arch=x86_64; sha=$BLOCKY_SHA256_X86_64 ;;
+        aarch64) arch=arm64; sha=$BLOCKY_SHA256_ARM64 ;;
+        *) die "Blocky: архитектура $(uname -m) не поддерживается" ;;
+    esac
+    tmp=$(mktemp -d)
+    if ! /usr/local/bin/blocky version 2>/dev/null | grep -q "$BLOCKY_VER"; then
+        fetch_pinned "https://github.com/0xERR0R/blocky/releases/download/v${BLOCKY_VER}/blocky_v${BLOCKY_VER}_Linux_${arch}.tar.gz" "$tmp/b.tgz" "$sha" \
+            || { rm -rf "$tmp"; die "Не удалось скачать Blocky"; }
+        tar -xzf "$tmp/b.tgz" -C "$tmp" blocky && install -m 0755 "$tmp/blocky" /usr/local/bin/blocky
+    fi
+    ok "Blocky v${BLOCKY_VER} (SHA256 совпал)"
+    for f in $ADBLOCK_FILES; do
+        name=${f%%:*}; want=${f#*:}
+        fetch_pinned "$ADBLOCK_REPO/$name" "$tmp/$name" "$want" || { rm -rf "$tmp"; die "Не удалось скачать $name"; }
+        sed -i 's/\r$//' "$tmp/$name"
+    done
+    id blocky >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin blocky
+    mkdir -p /opt/blocky/lists
+    install -m 0644 "$tmp/config.yml" /opt/blocky/config.yml
+    install -m 0644 "$tmp/custom-deny.txt" /opt/blocky/custom-deny.txt
+    install -m 0644 "$tmp/blocky.service" /etc/systemd/system/blocky.service
+    rm -rf "$tmp"
+    sed -i "s/10\.9\.9\.1:53/${tip//./\\.}:53/g" /opt/blocky/config.yml
+    chown -R blocky:blocky /opt/blocky
+    systemctl daemon-reload
+    systemctl enable --now blocky >/dev/null 2>&1 || true
+    systemctl restart blocky
+    sleep 3
+    systemctl is-active --quiet blocky || { journalctl -u blocky -n 20 --no-pager; die "Blocky не запустился"; }
+    ok "Blocky слушает ${tip}:53 (только внутри туннеля)"
+    if ufw status 2>/dev/null | grep -q 'Status: active'; then
+        ufw allow in on awg0 to any port 53 proto udp comment 'awgctl adblock' >/dev/null
+        ufw allow in on awg0 to any port 53 proto tcp comment 'awgctl adblock' >/dev/null
+        ok "ufw: 53/udp+tcp открыт только на awg0"
+    fi
+    mkdir -p "$AD_DIR"; echo "$tip" >"$AD_DIR/adblock"
+    rules_persist; rules_apply
+    ok "DNS-запросы всех клиентов перенаправлены на Blocky — переимпортировать конфиги не нужно"
+    log "    Списки скачиваются 1–2 минуты. Проверка: awgctl adblock status"
+    log "    Не блокирует рекламу внутри YouTube и сайты с DNS-over-HTTPS в браузере (выключи «Безопасный DNS»)."
+}
+
+adblock_off() {
+    need_installed
+    rm -f "$AD_DIR/adblock"
+    rules_apply
+    systemctl disable --now blocky >/dev/null 2>&1 || true
+    ufw delete allow in on awg0 to any port 53 proto udp >/dev/null 2>&1 || true
+    ufw delete allow in on awg0 to any port 53 proto tcp >/dev/null 2>&1 || true
+    log "Блокировщик выключен: DNS клиентов снова идёт как в их конфигах. Включить: awgctl adblock on"
+}
+
+adblock_status() {
+    need_installed
+    if [[ ! -f "$AD_DIR/adblock" ]]; then log "Блокировщик выключен. Включить: awgctl adblock on"; return 0; fi
+    WARNS=0; FAILS=0
+    systemctl is-active --quiet blocky && ok "Blocky работает" || fail "Blocky не работает (journalctl -u blocky)"
+    local tip; tip=$(cat "$AD_DIR/adblock")
+    [[ -n "$(ss -Hlun "src $tip:53" 2>/dev/null)" ]] && ok "Слушает ${tip}:53" || fail "Ничего не слушает ${tip}:53"
+    iptables -t nat -S AWGCTL_DNS 2>/dev/null | grep -q DNAT && ok "DNS клиентов перенаправлен" || fail "Нет перенаправления DNS (awgctl adblock on)"
+    local st; st=$(curl -fsS --max-time 5 http://127.0.0.1:4000/api/blocking/status 2>/dev/null || true)
+    [[ "$st" == *'"enabled":true'* ]] && ok "Блокировка включена (API Blocky)" || warn "API Blocky не ответил или блокировка выключена: ${st:-нет ответа}"
+    if command -v dig >/dev/null; then
+        [[ "$(dig +short -4 @"$tip" doubleclick.net A 2>/dev/null | head -1)" == 0.0.0.0 ]] && ok "doubleclick.net блокируется" || warn "doubleclick.net пока не блокируется (списки ещё качаются?)"
+    fi
+}
+
+do_adblock() {
+    case "${POS[0]:-on}" in
+        on) adblock_on ;;
+        off) adblock_off ;;
+        status) adblock_status ;;
+        *) die "awgctl adblock on|off|status" ;;
+    esac
+}
+
+# ------------------------------------------------------------------ дополнения: Telegram-бот awgram
+do_bot() {
+    need_installed
+    hdr "Telegram-бот awgram ${AWGRAM_VER}"
+    if [[ -z "$TG_TOKEN" ]]; then
+        [[ -r /dev/tty ]] || die "Нужен токен бота: AWGRAM_TOKEN=… awgctl bot --tg-admins=ID"
+        read -rsp "    Токен бота от @BotFather (ввод скрыт): " TG_TOKEN </dev/tty; echo
+    fi
+    if [[ -z "$TG_ADMINS" ]]; then
+        [[ -r /dev/tty ]] || die "Нужен Telegram ID: --tg-admins=ID"
+        read -rp "    Твой Telegram ID (от @userinfobot; несколько — через запятую): " TG_ADMINS </dev/tty
+    fi
+    [[ "$TG_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] || die "Токен не похож на токен бота (вида 123456:ABC…)"
+    [[ "$TG_ADMINS" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "Telegram ID — числа через запятую"
+    local f="$AD_DIR/awgram-install.sh"
+    mkdir -p "$AD_DIR"
+    fetch_pinned "https://github.com/ekuraev/awgram/releases/download/${AWGRAM_VER}/install.sh" "$f" "$AWGRAM_SETUP_SHA256" \
+        || die "Не удалось скачать установщик awgram"
+    # токен — через окружение: не попадает в ps и историю shell
+    AWGRAM_TOKEN="$TG_TOKEN" bash "$f" install --lang ru --mode hardened --admins "$TG_ADMINS" --version "$AWGRAM_VER" --yes \
+        || die "Установка awgram не удалась (подробности выше)"
+    ok "Бот установлен (режим hardened). Напиши своему боту /start в Telegram"
+    log "    Управление ботом: awgram-setup status | update | config | uninstall"
+    log "    Токен даёт полный контроль над VPN — не пересылай его."
+}
+
+ask_extras() { # в начале установки: после перезагрузок спросить уже не у кого
+    [[ -r /dev/tty && -t 0 ]] || { WANT_ADBLOCK=${WANT_ADBLOCK:-0}; WANT_BOT=${WANT_BOT:-0}; return 0; }
+    hdr "Дополнения (ставятся в конце установки)"
+    local a
+    if [[ -z "$WANT_ADBLOCK" ]]; then
+        read -rp "    Блокировать рекламу и трекеры по DNS для всех клиентов (Blocky)? [y/N] " a </dev/tty
+        [[ "$a" =~ ^([Yy]|да|д)$ ]] && WANT_ADBLOCK=1 || WANT_ADBLOCK=0
+    fi
+    if [[ -z "$WANT_BOT" ]]; then
+        read -rp "    Поставить Telegram-бот awgram для управления пользователями? [y/N] " a </dev/tty
+        [[ "$a" =~ ^([Yy]|да|д)$ ]] && WANT_BOT=1 || WANT_BOT=0
+    fi
+    if [[ "$WANT_BOT" == 1 ]]; then
+        [[ -n "$TG_TOKEN" ]] || { read -rsp "    Токен бота от @BotFather (ввод скрыт): " TG_TOKEN </dev/tty; echo; }
+        [[ -n "$TG_ADMINS" ]] || read -rp "    Твой Telegram ID (от @userinfobot): " TG_ADMINS </dev/tty
+        [[ "$TG_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] || die "Токен не похож на токен бота (вида 123456:ABC…)"
+        [[ "$TG_ADMINS" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "Telegram ID — числа через запятую"
+    fi
+}
+
+install_extras() {
+    if [[ "${WANT_ADBLOCK:-0}" == 1 ]]; then ( adblock_on ) || warn "Блокировщик не поставился — повтори: awgctl adblock on"; fi
+    if [[ "${WANT_BOT:-0}" == 1 ]]; then ( do_bot ) || warn "Бот не поставился — повтори: awgctl bot"; fi
+    # токен больше не нужен в файле состояния
+    if [[ -n "${TG_TOKEN:-}" ]]; then TG_TOKEN=""; [[ -f "$AD_STATE" ]] && state_save; fi
+}
+
 do_install() {
     need_root
     mkdir -p "$(dirname "$AD_LOG")"; touch "$AD_LOG"; chmod 600 "$AD_LOG"
-    log "amneziawgctl v${AD_VERSION} ($(date '+%F %T'))"
+    log "awgctl v${AD_VERSION} ($(date '+%F %T'))"
     case "$PROTOCOL" in 3.1|2.0) ;; *) die "--protocol: 3.1 или 2.0" ;; esac
     if [[ -n "$SRV_NAME" ]]; then
         [[ ${#SRV_NAME} -le 64 && "$SRV_NAME" != *[\"\'\\]* && ! "$SRV_NAME" =~ [[:cntrl:]] ]] || die "--name: до 64 символов, без кавычек и обратной косой черты"
     fi
     command -v jq >/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq >/dev/null 2>&1; } || die "Не удалось поставить jq"; }
     preflight
+    ((DRY_RUN)) || ask_extras
 
     hdr "План"
     installer_args
@@ -661,7 +846,8 @@ do_install() {
     log "       — 1–2 перезагрузки: после них установка продолжится сама (systemd awgctl-resume)."
     log "       — имя сервера в приложении: ${SRV_NAME:-AWG Server (по умолчанию движка)}"
     log "    3. Клиенты: ${CLIENTS:-my_phone, my_laptop (по умолчанию установщика)}"
-    log "    4. Итоговая проверка. Лог: $AD_LOG"
+    log "    4. Дополнения: блокировщик рекламы — $([[ "${WANT_ADBLOCK:-0}" == 1 ]] && echo да || echo нет), Telegram-бот — $([[ "${WANT_BOT:-0}" == 1 ]] && echo да || echo нет)"
+    log "    5. Итоговая проверка. Лог: $AD_LOG"
     if ((DRY_RUN)); then log ""; log "--dry-run: ничего не изменено."; exit 0; fi
 
     state_save
@@ -694,6 +880,7 @@ do_resume() {
 finish() {
     resume_unit_off
     setup_clients
+    install_extras
     post_check || true
     summary
     echo "done $(date '+%F %T')" >"$AD_DIR/finished"
@@ -733,6 +920,8 @@ case "$CMD" in
     restore) need_installed; manage restore "${POS[@]}" ;;
     engine) need_installed; manage "${EXTRA[@]+"${EXTRA[@]}"}" ;;
     uninstall) do_uninstall ;;
+    adblock) do_adblock ;;
+    bot) do_bot ;;
     _rules) [[ -f "$SERVER_CONF" ]] && rules_apply ;;
     *) die "Неизвестная команда: $CMD (awgctl help)" ;;
 esac

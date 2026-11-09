@@ -131,3 +131,26 @@ STUB
         (( p >= 20000 && p <= 59999 ))
     done
 }
+
+@test "дополнения: без терминала по умолчанию не ставятся, флаги сохраняются" {
+    WANT_ADBLOCK=""; WANT_BOT=""
+    ask_extras </dev/null
+    [ "$WANT_ADBLOCK" = 0 ] && [ "$WANT_BOT" = 0 ]
+    WANT_ADBLOCK=1; WANT_BOT=""
+    ask_extras </dev/null
+    [ "$WANT_ADBLOCK" = 1 ]
+}
+
+@test "bot: неверный токен или ID — отказ до скачивания" {
+    need_installed() { :; }
+    TG_TOKEN="bad"; TG_ADMINS="123"
+    run do_bot; [ "$status" -ne 0 ]; [[ "$output" == *"Токен"* ]]
+    TG_TOKEN="123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; TG_ADMINS="12a"
+    run do_bot; [ "$status" -ne 0 ]; [[ "$output" == *"Telegram ID"* ]]
+}
+
+@test "закреплённые версии дополнений" {
+    [[ "$AWGRAM_SETUP_SHA256" =~ ^[0-9a-f]{64}$ && "$BLOCKY_SHA256_X86_64" =~ ^[0-9a-f]{64}$ && "$BLOCKY_SHA256_ARM64" =~ ^[0-9a-f]{64}$ ]]
+    [[ "$ADBLOCK_REPO" =~ /[0-9a-f]{40}$ ]]
+    for f in $ADBLOCK_FILES; do [[ "${f#*:}" =~ ^[0-9a-f]{64}$ ]]; done
+}
