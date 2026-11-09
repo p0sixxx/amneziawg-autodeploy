@@ -154,3 +154,16 @@ STUB
     [[ "$ADBLOCK_REPO" =~ /[0-9a-f]{40}$ ]]
     for f in $ADBLOCK_FILES; do [[ "${f#*:}" =~ ^[0-9a-f]{64}$ ]]; done
 }
+
+@test "state: пустой EXTRA не превращается в пустой аргумент (и старые файлы чинятся)" {
+    AD_STATE="$T/state.env"; PORT=1; PROTOCOL=3.1; ENDPOINT=""; CLIENTS=""; MOBILE=0; KEEP_PKGS=0; KEEP_IPV6=0
+    SRV_NAME=""; WANT_ADBLOCK=0; WANT_BOT=0; TG_TOKEN=""; TG_ADMINS=""; EXTRA=()
+    AD_DIR="$T/st"; state_save
+    grep -qx 'EXTRA=()' "$AD_STATE"
+    sed -i "s/^EXTRA=.*/EXTRA=('' )/" "$AD_STATE"
+    stat() { echo "root 600"; }
+    state_load
+    [ "${#EXTRA[@]}" -eq 0 ]
+    installer_args
+    for a in "${INST_ARGS[@]}"; do [ -n "$a" ]; done
+}

@@ -13,7 +13,7 @@
 # shellcheck disable=SC2015  # ok/warn/fail всегда возвращают 0
 set -Eeuo pipefail
 
-AD_VERSION="2.0.0"
+AD_VERSION="2.1.0"
 AD_REPO_RAW="${AD_REPO_RAW:-https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy}"
 AD_REF="${AD_REF:-main}"
 # Движок: релиз bivlked/amneziawg-installer. Смена версии — только после аудита (AUDIT.md),
@@ -211,7 +211,8 @@ state_save() {
     mkdir -p "$AD_DIR"; chmod 700 "$AD_DIR"
     {
         printf 'PORT=%q\nPROTOCOL=%q\nENDPOINT=%q\nCLIENTS=%q\nMOBILE=%q\nKEEP_PKGS=%q\nKEEP_IPV6=%q\nSRV_NAME=%q\nWANT_ADBLOCK=%q\nWANT_BOT=%q\nTG_TOKEN=%q\nTG_ADMINS=%q\n' "$PORT" "$PROTOCOL" "$ENDPOINT" "$CLIENTS" "$MOBILE" "$KEEP_PKGS" "$KEEP_IPV6" "$SRV_NAME" "$WANT_ADBLOCK" "$WANT_BOT" "$TG_TOKEN" "$TG_ADMINS"
-        printf 'EXTRA=('; printf '%q ' "${EXTRA[@]+"${EXTRA[@]}"}"; printf ')\n'
+        # пустой массив: printf '%q ' без аргументов печатает '' — это сломало бы установщик
+        printf 'EXTRA=('; ((${#EXTRA[@]})) && printf '%q ' "${EXTRA[@]}"; printf ')\n'
         printf 'PUBLIC_IP=%q\n' "${PUBLIC_IP:-}"
     } >"$AD_STATE.tmp"
     chmod 600 "$AD_STATE.tmp"; mv -f "$AD_STATE.tmp" "$AD_STATE"
@@ -222,6 +223,10 @@ state_load() {
     [[ "$(stat -c '%U %a' "$AD_STATE")" == "root 600" ]] || die "$AD_STATE: неверные права/владелец — не загружаю."
     # shellcheck disable=SC1090
     source "$AD_STATE"
+    # файлы состояния awgctl < 2.1 содержали EXTRA=('') — пустые аргументы выбрасываем
+    local a clean=()
+    for a in "${EXTRA[@]+"${EXTRA[@]}"}"; do [[ -n "$a" ]] && clean+=("$a"); done
+    EXTRA=("${clean[@]+"${clean[@]}"}")
 }
 
 self_install() { # копия обёртки в /usr/local/sbin, чтобы продолжить после перезагрузки
@@ -393,15 +398,16 @@ installer_args() {
 run_installer() { # 0 — установка завершена; 2 — ушёл в перезагрузку
     installer_args
     hdr "Запуск install_amneziawg.sh ${INST_ARGS[*]}"
-    local rc=0
+    local rc=0 before after lf="$AWG_DIR/install_amneziawg.log"
+    before=$(grep -c 'ТРЕБУЕТСЯ ПЕРЕЗАГРУЗКА' "$lf" 2>/dev/null || true)
     # AWG_BRANCH в окружении отключил бы проверку SHA256 скриптов движка (см. AUDIT.md) — убираем
     env -u AWG_BRANCH -u AWG_ALLOW_UNVERIFIED -u AWG_FORCE_REINSTALL bash "$AD_DIR/install_amneziawg.sh" "${INST_ARGS[@]}" || rc=$?
     if [[ "$(cat "$AWG_DIR/setup_state" 2>/dev/null)" == "99" ]]; then
         return 0
     fi
-    # установщик просит перезагрузку и выходит с 1 до reboot — продолжит systemd-юнит
-    if [[ $rc -ne 0 ]] && grep -q 'ТРЕБУЕТСЯ ПЕРЕЗАГРУЗКА' "$AWG_DIR/install_amneziawg.log" 2>/dev/null \
-        && [[ $(stat -c %Y "$AWG_DIR/install_amneziawg.log" 2>/dev/null || echo 0) -gt $(( $(date +%s) - 120 )) ]]; then
+    # перезагрузку просил именно ЭТОТ запуск (новая строка в логе), а не прошлый
+    after=$(grep -c 'ТРЕБУЕТСЯ ПЕРЕЗАГРУЗКА' "$lf" 2>/dev/null || true)
+    if [[ $rc -ne 0 ]] && (( ${after:-0} > ${before:-0} )); then
         return 2
     fi
     return "$rc"
