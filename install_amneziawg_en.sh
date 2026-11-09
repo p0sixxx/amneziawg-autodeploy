@@ -8914,7 +8914,13 @@ verify_sha256() {
         return 0
     fi
     if [[ "${AWG_BRANCH}" != "v${SCRIPT_VERSION}" ]]; then
-        log_warn "SHA256 for $label: verification skipped (AWG_BRANCH=${AWG_BRANCH} != v${SCRIPT_VERSION}). File not verified."
+        # amneziawg-autodeploy: overriding AWG_BRANCH used to silently disable integrity checks.
+        if [[ "${AWG_ALLOW_UNVERIFIED:-0}" != "1" ]]; then
+            log_error "SHA256 for $label cannot be verified: AWG_BRANCH=${AWG_BRANCH} != v${SCRIPT_VERSION}."
+            log_error "  Refusing to use unverified scripts. For debugging only: AWG_ALLOW_UNVERIFIED=1."
+            return 1
+        fi
+        log_warn "SHA256 for $label: verification skipped (AWG_ALLOW_UNVERIFIED=1). File not verified."
         return 0
     fi
     local actual

@@ -8762,7 +8762,15 @@ verify_sha256() {
         return 0
     fi
     if [[ "${AWG_BRANCH}" != "v${SCRIPT_VERSION}" ]]; then
-        log_warn "SHA256 для $label: проверка пропущена (AWG_BRANCH=${AWG_BRANCH} != v${SCRIPT_VERSION}). Файл не верифицирован."
+        # amneziawg-autodeploy: подмена AWG_BRANCH через окружение раньше молча
+        # отключала проверку целостности скачиваемых скриптов. Теперь это отказ,
+        # если явно не разрешено (только для отладки форка).
+        if [[ "${AWG_ALLOW_UNVERIFIED:-0}" != "1" ]]; then
+            log_error "SHA256 для $label не проверить: AWG_BRANCH=${AWG_BRANCH} != v${SCRIPT_VERSION}."
+            log_error "  Скачивать непроверенные скрипты отказываюсь. Для отладки: AWG_ALLOW_UNVERIFIED=1."
+            return 1
+        fi
+        log_warn "SHA256 для $label: проверка пропущена (AWG_ALLOW_UNVERIFIED=1). Файл не верифицирован."
         return 0
     fi
     local actual

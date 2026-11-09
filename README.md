@@ -1,4 +1,34 @@
 <a id="top"></a>
+
+> ## amneziawg-autodeploy — форк с обёрткой
+>
+> Форк [bivlked/amneziawg-installer](https://github.com/bivlked/amneziawg-installer) **v6.2.1** с аудитом ([AUDIT.md](AUDIT.md)) и обёрткой `autodeploy.sh`, которая добавляет проверки из [3x-ui-autodeploy](https://github.com/p0sixxx/3x-ui-autodeploy):
+>
+> - проверка сервера и сети до установки (ОС, архитектура, контейнер или ВМ, RAM, диск, DNS, доступ к GitHub и PPA, публичный IP, NAT, время);
+> - **не заблокирован ли IP в России**: SSH-порт проверяется через check-host.net с узлов в РФ и Европе, на заблокированный IP установка не идёт;
+> - **случайный UDP-порт** вместо общего для всех 39743 (`--mobile` — 443/udp);
+> - безопасные флаги: системные пакеты не удаляются, IPv6 хоста не отключается, модуль только из официального PPA через DKMS;
+> - установщик скачивается с проверкой SHA256, подмена `AWG_BRANCH` больше не отключает проверку скриптов;
+> - установка сама продолжается после перезагрузок, свои клиенты (`--clients=phone,laptop`), итоговая проверка `awg-autodeploy check`.
+>
+> **Установка** (чистый Ubuntu 24.04 или Debian 13, KVM):
+> ```bash
+> curl -fsSLo /root/awg-autodeploy.sh https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy/main/autodeploy.sh
+> bash /root/awg-autodeploy.sh --dry-run                 # план, без изменений
+> bash /root/awg-autodeploy.sh --clients=phone,laptop    # установка (3.1)
+> bash /root/awg-autodeploy.sh --protocol=2.0            # отдельный сервер 2.0: GL.iNet на штатной прошивке, Hiddify
+> ```
+> Сервер 1–2 раза перезагрузится — установка продолжится сама. Через 3–5 минут: `awg-autodeploy status`, затем `awg-autodeploy check`.
+>
+> Клиенты: `bash /root/awg/manage_amneziawg.sh add|remove|list|qr|backup|restore|check|diagnose` (описание ниже, в оригинальном README).
+> Переменные — [config.env.example](config.env.example), проверка — [TESTING.md](TESTING.md).
+>
+> | Порт | Что |
+> |---|---|
+> | SSH (текущий) /tcp | не меняется, разрешается в ufw до включения |
+> | случайный 20000–59999 /udp (или 443) | AmneziaWG |
+>
+> Ниже — оригинальный README upstream.
 <p align="center">
   <b>RU</b> Русский | <b>EN</b> <a href="README.en.md">English</a>
 </p>
