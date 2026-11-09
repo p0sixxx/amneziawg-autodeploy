@@ -1,41 +1,35 @@
 #!/usr/bin/env bash
-# amneziawg-autodeploy — обёртка над install_amneziawg.sh (форк bivlked/amneziawg-installer v6.2.1).
+# awgctl — установка и удобное управление AmneziaWG-сервером.
 #
-# Что добавляет поверх установщика:
-#   * проверки сервера и сети до установки (ОС, архитектура, виртуализация, RAM, диск,
-#     DNS, доступ к GitHub и PPA, публичный IP, NAT, время);
-#   * проверку, не заблокирован ли IP сервера в России (check-host.net: узлы в РФ и Европе);
-#   * случайный UDP-порт вместо известного всем 39743;
-#   * безопасные флаги по умолчанию: не удалять системные пакеты, не отключать IPv6 на хосте,
-#     модуль только из официального PPA через DKMS (без готовых .deb из чужих релизов);
-#   * загрузку установщика с проверкой SHA256 (pin в этом файле);
-#   * автоматическое продолжение после перезагрузок (systemd oneshot);
-#   * своих клиентов (CLIENTS=phone,laptop) и итоговую проверку.
+# Движок — bivlked/amneziawg-installer (MIT), закреплённая версия, проверка SHA256; его код не меняется.
+# awgctl добавляет: проверки сервера и сети, проверку блокировки IP в РФ (check-host.net),
+# случайный UDP-порт, безопасные флаги установки, продолжение после перезагрузок и команды
+# управления пользователями в стиле `vpn` из 3x-ui-autodeploy.
 #
-# Установка (на чистом Ubuntu 24.04 / Debian 13):
-#   curl -fsSLo /root/awg-autodeploy.sh https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy/main/autodeploy.sh
-#   bash /root/awg-autodeploy.sh --dry-run      # только план
-#   bash /root/awg-autodeploy.sh                # установка
-#
-# Команды:  install (по умолчанию) | check | status | resume | help
-# Опции:    --dry-run --yes --non-interactive --port=N --mobile --protocol=3.1|2.0
-#           --endpoint=АДРЕС --clients=a,b --allow-blocked-ip --skip-external-check
-#           -- <любые флаги install_amneziawg.sh>
+# Установка на чистом Ubuntu 24.04 / Debian 13 (KVM):
+#   curl -fsSLo /root/awgctl https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy/main/awgctl
+#   bash /root/awgctl install --dry-run     # только план
+#   bash /root/awgctl install               # установка; дальше команда доступна как awgctl
 # shellcheck disable=SC2015  # ok/warn/fail всегда возвращают 0
 set -Eeuo pipefail
 
-AD_VERSION="1.0.0"
+AD_VERSION="2.0.0"
 AD_REPO_RAW="${AD_REPO_RAW:-https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy}"
 AD_REF="${AD_REF:-main}"
-# SHA256 install_amneziawg.sh этого репозитория. Обновляет scripts/update-autodeploy-pin.sh.
-INSTALLER_SHA256="b4842d81b455d3155c540f68ec2692f1fd148911a326a027342297753df46395"
+# Движок: релиз bivlked/amneziawg-installer. Смена версии — только после аудита (AUDIT.md),
+# SHA256 — файла install_amneziawg.sh из релиза (совпадает с файлом под тегом).
+ENGINE_VER="6.2.1"
+ENGINE_URL="https://github.com/bivlked/amneziawg-installer/releases/download/v${ENGINE_VER}/install_amneziawg.sh"
+ENGINE_SHA256="75940a6c92c3734f7f8bc43d9f499b572b430144c79b7342a7bdc6f21969cf91"
 
-AD_DIR=/root/awg-autodeploy
-AD_STATE="$AD_DIR/autodeploy.env"
-AD_LOG=/var/log/awg-autodeploy.log
-AD_BIN=/usr/local/sbin/awg-autodeploy
-AD_UNIT=/etc/systemd/system/awg-autodeploy-resume.service
+AD_DIR=/var/lib/awgctl
+AD_STATE="$AD_DIR/state.env"
+AD_LOG=/var/log/awgctl.log
+AD_BIN=/usr/local/sbin/awgctl
+AD_UNIT=/etc/systemd/system/awgctl-resume.service
 AWG_DIR=/root/awg
+SERVER_CONF=/etc/amnezia/amneziawg/awg0.conf
+OFF_LIST="$AD_DIR/disabled"
 CH=https://check-host.net
 
 # ------------------------------------------------------------------ вывод
@@ -45,17 +39,17 @@ hdr()  { log ""; log "${C_B}==> $*${C_0}"; }
 ok()   { log "    ${C_G}[OK]${C_0} $*"; }
 warn() { log "    ${C_Y}[!!]${C_0} $*"; WARNS=$((WARNS + 1)); }
 fail() { log "    ${C_R}[FAIL]${C_0} $*"; FAILS=$((FAILS + 1)); }
-die()  { log ""; log "${C_R}[СТОП]${C_0} $*"; exit 1; }
+die()  { printf '%s\n' "" "${C_R}[СТОП]${C_0} $*" >&2; printf '%s %s\n' "$(date '+%F %T')" "[СТОП] $*" >>"$AD_LOG" 2>/dev/null || true; exit 1; }
 WARNS=0; FAILS=0
-trap 'rc=$?; [[ $rc -ne 0 ]] && log "Ошибка в строке $LINENO (код $rc). Лог: $AD_LOG"' ERR
+trap 'rc=$?; [[ $rc -ne 0 ]] && printf "Ошибка в строке %s (код %s). Лог: %s\n" "$LINENO" "$rc" "$AD_LOG" >&2' ERR
 
 # ------------------------------------------------------------------ аргументы
-CMD=install; DRY_RUN=0; AUTO_YES=0; PORT="${PORT:-}"; MOBILE="${MOBILE:-0}"; PROTOCOL="${PROTOCOL:-3.1}"
+CMD=""; POS=(); DRY_RUN=0; AUTO_YES=0; PORT="${PORT:-}"; MOBILE="${MOBILE:-0}"; PROTOCOL="${PROTOCOL:-3.1}"
 ENDPOINT="${ENDPOINT:-}"; CLIENTS="${CLIENTS:-}"; ALLOW_BLOCKED="${ALLOW_BLOCKED:-0}"; SKIP_EXT="${SKIP_EXTERNAL_CHECK:-0}"
-EXTRA=()
+DAYS=""; PSK=0; KEEP_PKGS="${KEEP_PACKAGES:-0}"; KEEP_IPV6="${KEEP_IPV6:-0}"; EXTRA=()
+if [[ "${1:-}" == engine ]]; then CMD=engine; shift; EXTRA=("$@"); set --; fi   # всё дальше — как есть в manage_amneziawg.sh
 while (($#)); do
     case "$1" in
-        install|check|status|resume|help) CMD=$1 ;;
         --dry-run) DRY_RUN=1 ;;
         -y|--yes|--non-interactive) AUTO_YES=1 ;;
         --port=*) PORT=${1#*=} ;;
@@ -65,15 +59,51 @@ while (($#)); do
         --clients=*) CLIENTS=${1#*=} ;;
         --allow-blocked-ip) ALLOW_BLOCKED=1 ;;
         --skip-external-check) SKIP_EXT=1 ;;
+        --days=*) DAYS=${1#*=} ;;
+        --days) shift; DAYS=${1:-} ;;
+        --psk) PSK=1 ;;
+        --keep-packages) KEEP_PKGS=1 ;;
+        --keep-ipv6) KEEP_IPV6=1 ;;
         -h|--help) CMD=help ;;
         --) shift; EXTRA=("$@"); break ;;
-        *) die "Неизвестный аргумент: $1 (справка: --help)" ;;
+        -*) die "Неизвестный параметр: $1 (справка: awgctl help)" ;;
+        *) if [[ -z "$CMD" ]]; then CMD=$1; else POS+=("$1"); fi ;;
     esac
     shift
 done
+CMD=${CMD:-help}
 
-usage() { sed -n '2,25p' "$AD_BIN" 2>/dev/null || sed -n '2,25p' "$0"; }
+usage() {
+    cat <<'HELP'
+awgctl — AmneziaWG: установка и управление пользователями
 
+Установка
+  awgctl install [--dry-run] [--port=N | --mobile] [--protocol=3.1|2.0] [--clients=a,b]
+                 [--endpoint=АДРЕС] [--keep-packages] [--keep-ipv6] [--allow-blocked-ip] [--skip-external-check]
+                 без вопросов: случайный порт, IPv6 хоста выключен, лишние пакеты удаляются
+                 [-- флаги install_amneziawg.sh]
+  awgctl status                  ход установки (после перезагрузок)
+  awgctl resume                  продолжить прерванную установку
+
+Пользователи
+  awgctl add <имя> [--days N] [--psk]   новый пользователь: QR, ссылка vpn:// и файл .conf
+  awgctl list                           все: IP, вкл/выкл, трафик, последний вход, срок
+  awgctl show <имя>                     QR + ссылка vpn:// + путь к .conf
+  awgctl qr <имя>                       QR для приложения AmneziaWG
+  awgctl link <имя>                     ссылка vpn:// (Amnezia VPN, AmneziaWG)
+  awgctl conf <имя>                     текст конфига (вставить в «Добавить туннель»)
+  awgctl renew <имя> <дней|0>           продлить на N дней от сегодня (0 — бессрочно)
+  awgctl off <имя> / awgctl on <имя>    временно отключить / включить (ключи сохраняются)
+  awgctl del <имя>                      удалить
+
+Сервер
+  awgctl check                   проверка: сервис, порт, NAT, ufw, IP из России (check-host.net)
+  awgctl backup | restore [файл] бэкап ключей и клиентов / восстановление
+  awgctl uninstall               удалить AmneziaWG и awgctl
+  awgctl engine <команда …>      любая команда manage_amneziawg.sh (diagnose, stats, regen…)
+  awgctl help
+HELP
+}
 need_root() { [[ $EUID -eq 0 ]] || die "Запусти от root (sudo -i)."; }
 
 ask() { # ask "вопрос" → 0 = да
@@ -159,7 +189,7 @@ repo_get() { # repo_get <путь в репо> <куда>
 state_save() {
     mkdir -p "$AD_DIR"; chmod 700 "$AD_DIR"
     {
-        printf 'PORT=%q\nPROTOCOL=%q\nENDPOINT=%q\nCLIENTS=%q\nMOBILE=%q\n' "$PORT" "$PROTOCOL" "$ENDPOINT" "$CLIENTS" "$MOBILE"
+        printf 'PORT=%q\nPROTOCOL=%q\nENDPOINT=%q\nCLIENTS=%q\nMOBILE=%q\nKEEP_PKGS=%q\nKEEP_IPV6=%q\n' "$PORT" "$PROTOCOL" "$ENDPOINT" "$CLIENTS" "$MOBILE" "$KEEP_PKGS" "$KEEP_IPV6"
         printf 'EXTRA=('; printf '%q ' "${EXTRA[@]+"${EXTRA[@]}"}"; printf ')\n'
         printf 'PUBLIC_IP=%q\n' "${PUBLIC_IP:-}"
     } >"$AD_STATE.tmp"
@@ -179,14 +209,14 @@ self_install() { # копия обёртки в /usr/local/sbin, чтобы пр
     if [[ -f "$src" && "$src" != "$AD_BIN" ]]; then
         install -m 700 "$src" "$AD_BIN"
     elif [[ ! -x "$AD_BIN" ]]; then
-        repo_get autodeploy.sh "$AD_BIN.new" && chmod 700 "$AD_BIN.new" && mv -f "$AD_BIN.new" "$AD_BIN" \
+        repo_get awgctl "$AD_BIN.new" && chmod 700 "$AD_BIN.new" && mv -f "$AD_BIN.new" "$AD_BIN" \
             || die "Не удалось сохранить обёртку в $AD_BIN"
     fi
 }
 resume_unit_on() {
     cat >"$AD_UNIT" <<EOF
 [Unit]
-Description=amneziawg-autodeploy: продолжить установку после перезагрузки
+Description=awgctl: продолжить установку после перезагрузки
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=$AD_STATE
@@ -202,10 +232,10 @@ TimeoutStartSec=3600
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable awg-autodeploy-resume.service >/dev/null 2>&1
+    systemctl enable awgctl-resume.service >/dev/null 2>&1
 }
 resume_unit_off() {
-    systemctl disable awg-autodeploy-resume.service >/dev/null 2>&1 || true
+    systemctl disable awgctl-resume.service >/dev/null 2>&1 || true
     rm -f "$AD_UNIT"; systemctl daemon-reload || true
 }
 
@@ -314,30 +344,25 @@ external_check() { # не заблокирован ли IP в России
 }
 
 # ------------------------------------------------------------------ установщик
-fetch_installer() {
-    local f="$AD_DIR/install_amneziawg.sh" src
+fetch_installer() { # движок bivlked из релиза, проверка SHA256
+    local f="$AD_DIR/install_amneziawg.sh" got
     mkdir -p "$AD_DIR"; chmod 700 "$AD_DIR"
-    local dir; dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo /)")"
-    src="$dir/install_amneziawg.sh"
-    # локальную копию берём только из клона ЭТОГО репозитория (рядом .git и AUDIT.md),
-    # а не любой install_amneziawg.sh, случайно лежащий рядом (например, upstream в /root)
-    if [[ -f "$src" && "$src" != "$f" && -d "$dir/.git" && -f "$dir/AUDIT.md" ]]; then
-        cp -f "$src" "$f.new"
-    else
-        repo_get install_amneziawg.sh "$f.new" \
-            || die "Не удалось скачать install_amneziawg.sh (404 — репозиторий приватный? задай GH_TOKEN=… или сделай его публичным)"
-    fi
-    local got; got=$(sha256sum "$f.new" | awk '{print $1}')
-    if [[ "$INSTALLER_SHA256" != "__INSTALLER_SHA256__" && "$got" != "$INSTALLER_SHA256" ]]; then
+    curl -fsSL --max-time 120 -o "$f.new" "$ENGINE_URL" || die "Не удалось скачать $ENGINE_URL"
+    got=$(sha256sum "$f.new" | awk '{print $1}')
+    if [[ "$got" != "$ENGINE_SHA256" ]]; then
         rm -f "$f.new"
-        die "SHA256 install_amneziawg.sh не совпал (ожидался $INSTALLER_SHA256, получен $got). Файл мог быть подменён, или обёртка устарела: скачай autodeploy.sh заново."
+        die "SHA256 install_amneziawg.sh v${ENGINE_VER} не совпал (ожидался $ENGINE_SHA256, получен $got). Файл мог быть подменён."
     fi
     chmod 700 "$f.new"; mv -f "$f.new" "$f"
-    log "    install_amneziawg.sh: SHA256 $got"
+    log "    install_amneziawg.sh v${ENGINE_VER}: SHA256 совпал"
 }
 
 installer_args() {
-    INST_ARGS=(--yes --keep-packages --allow-ipv6 --no-prebuilt --route-all "--port=$PORT" "--protocol=$PROTOCOL")
+    # как рекомендует автор движка для однозадачного VPS (1 ядро / 1 ГБ): IPv6 на хосте выключен,
+    # лишние службы (snapd, packagekit, modemmanager, udisks2, unattended-upgrades…) удаляются.
+    INST_ARGS=(--yes --no-prebuilt --route-all --isolation=on "--port=$PORT" "--protocol=$PROTOCOL")
+    [[ "$KEEP_PKGS" == 1 ]] && INST_ARGS+=(--keep-packages)
+    if [[ "$KEEP_IPV6" == 1 ]]; then INST_ARGS+=(--allow-ipv6); else INST_ARGS+=(--disallow-ipv6); fi
     [[ "$MOBILE" == 1 ]] && INST_ARGS+=(--preset=mobile)
     [[ -n "$ENDPOINT" ]] && INST_ARGS+=("--endpoint=$ENDPOINT")
     INST_ARGS+=("${EXTRA[@]+"${EXTRA[@]}"}")
@@ -347,7 +372,8 @@ run_installer() { # 0 — установка завершена; 2 — ушёл 
     installer_args
     hdr "Запуск install_amneziawg.sh ${INST_ARGS[*]}"
     local rc=0
-    bash "$AD_DIR/install_amneziawg.sh" "${INST_ARGS[@]}" || rc=$?
+    # AWG_BRANCH в окружении отключил бы проверку SHA256 скриптов движка (см. AUDIT.md) — убираем
+    env -u AWG_BRANCH -u AWG_ALLOW_UNVERIFIED -u AWG_FORCE_REINSTALL bash "$AD_DIR/install_amneziawg.sh" "${INST_ARGS[@]}" || rc=$?
     if [[ "$(cat "$AWG_DIR/setup_state" 2>/dev/null)" == "99" ]]; then
         return 0
     fi
@@ -394,7 +420,7 @@ post_check() {
     else
         fail "Интерфейса awg0 нет (awg show)"
     fi
-    if grep -q '^HeaderProtectionKey' /etc/amnezia/amneziawg/awg0.conf 2>/dev/null; then ok "AWG 3.1: HeaderProtectionKey в конфиге"
+    if grep -q '^HeaderProtectionKey' "$SERVER_CONF" 2>/dev/null; then ok "AWG 3.1: HeaderProtectionKey в конфиге"
     else ok "Профиль AWG 2.0"; fi
     [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" == 1 ]] && ok "IPv4 forwarding включён" || fail "net.ipv4.ip_forward = 0"
     if iptables -t nat -S 2>/dev/null | grep -q MASQUERADE || nft list ruleset 2>/dev/null | grep -q masquerade; then ok "NAT (MASQUERADE) есть"
@@ -409,7 +435,7 @@ post_check() {
     local n; n=$(awg show awg0 peers 2>/dev/null | grep -c . || true)
     ok "Клиентов (peers): ${n:-0}"
     if awg show awg0 latest-handshakes 2>/dev/null | awk '$2 > 0 {f=1} END {exit !f}'; then ok "Есть рукопожатия клиентов"
-    else log "    [..] Рукопожатий пока нет — подключи клиента и запусти: awg-autodeploy check"; fi
+    else log "    [..] Рукопожатий пока нет — подключи клиента и запусти: awgctl check"; fi
     PUBLIC_IP=${PUBLIC_IP:-$(detect_ip)}
     external_check
     log ""
@@ -419,38 +445,218 @@ post_check() {
 
 summary() {
     hdr "Готово"
-    log "    Сервер:   ${PUBLIC_IP:-?}:${PORT}/udp, протокол AmneziaWG ${PROTOCOL}"
-    log "    Конфиги:  $AWG_DIR/*.conf  (QR: $AWG_DIR/*.png)"
-    log "    QR в терминале:   bash $AWG_DIR/manage_amneziawg.sh qr <имя>"
-    log "    Новый клиент:     bash $AWG_DIR/manage_amneziawg.sh add <имя>"
-    log "    Бэкап:            bash $AWG_DIR/manage_amneziawg.sh backup"
-    log "    Проверка:         awg-autodeploy check"
+    log "    Сервер:  ${PUBLIC_IP:-?}:${PORT}/udp, AmneziaWG ${PROTOCOL}"
+    log "    Пользователи:  awgctl list | awgctl add <имя> [--days N] | awgctl show <имя> | awgctl del <имя>"
+    log "    Проверка:      awgctl check        Справка: awgctl help"
     log "    Клиенты для 3.1: AmneziaWG (iOS/macOS 3.1.4+, Android 3.1.4+, Windows 3.1.0+), WG Tunnel 5.6+, Amnezia VPN 5.0.1.5+."
     log "    Роутеры GL.iNet на штатной прошивке и Hiddify 3.1 не понимают — для них отдельный сервер с --protocol=2.0."
 }
 
-# ------------------------------------------------------------------ команды
+# ------------------------------------------------------------------ пользователи
+need_installed() {
+    need_root
+    [[ -f "$SERVER_CONF" && -f "$AWG_DIR/manage_amneziawg.sh" ]] || die "AmneziaWG не установлен. Установка: awgctl install"
+}
+check_name() { [[ "${1:-}" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || die "Имя «${1:-}»: латиница, цифры, _ и -, до 32 символов"; }
+client_exists() { grep -qxF "#_Name = $1" "$SERVER_CONF"; }
+need_client() { check_name "${1:-}"; client_exists "$1" || die "Пользователя «$1» нет (awgctl list)"; }
+
+peers_tsv() { # имя<TAB>pubkey<TAB>ip — из конфига сервера
+    awk '/^\[Peer\]/ {n=""; k=""; next}
+         /^#_Name = / {n=substr($0, 10)}
+         /^PublicKey = / && n != "" {k=substr($0, 13)}
+         /^AllowedIPs = / && n != "" && k != "" {ip=substr($0, 14); sub(/\/.*/, "", ip); print n "\t" k "\t" ip; n=""; k=""}' "$SERVER_CONF"
+}
+client_ip() { peers_tsv | awk -F'\t' -v n="$1" '$1 == n {print $3; exit}'; }
+
+human() { # байты → «1.2 ГБ»
+    awk -v b="${1:-0}" 'BEGIN { split("Б КБ МБ ГБ ТБ", u, " "); i = 1; while (b >= 1024 && i < 5) { b /= 1024; i++ }
+        printf (i == 1 ? "%d %s" : "%.1f %s"), b, u[i] }'
+}
+ago() { # секунды с эпохи → «5 мин назад»
+    local t=${1:-0} d
+    ((t > 0)) || { echo "—"; return; }
+    d=$(( $(date +%s) - t ))
+    if ((d < 120)); then echo "сейчас"
+    elif ((d < 3600)); then echo "$((d / 60)) мин назад"
+    elif ((d < 86400)); then echo "$((d / 3600)) ч назад"
+    else echo "$((d / 86400)) дн назад"; fi
+}
+expiry_of() { cat "$AWG_DIR/expiry/$1" 2>/dev/null || true; }
+
+is_off() { [[ -f "$OFF_LIST" ]] && grep -qxF "$1" "$OFF_LIST"; }
+
+rules_apply() { # отключённые пользователи: DROP их трафика в туннеле (переживает syncconf и перезапуск awg0)
+    local n ip
+    iptables -N AWGCTL 2>/dev/null || true
+    iptables -F AWGCTL
+    if [[ -f "$OFF_LIST" ]]; then
+        while IFS= read -r n; do
+            [[ -n "$n" ]] || continue
+            ip=$(client_ip "$n")
+            [[ -n "$ip" ]] && iptables -A AWGCTL -s "$ip" -j DROP
+        done <"$OFF_LIST"
+    fi
+    iptables -C FORWARD -i awg0 -j AWGCTL 2>/dev/null || iptables -I FORWARD 1 -i awg0 -j AWGCTL
+    iptables -C INPUT -i awg0 -j AWGCTL 2>/dev/null || iptables -I INPUT 1 -i awg0 -j AWGCTL
+}
+rules_persist() { # после перезагрузки и после ufw reload (он сбрасывает встроенные цепочки)
+    cat >/etc/systemd/system/awgctl-rules.service <<UNIT
+[Unit]
+Description=awgctl: правила для отключённых пользователей AmneziaWG
+After=awg-quick@awg0.service ufw.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$AD_BIN _rules
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    printf '* * * * * root [ -x %s ] && %s _rules >/dev/null 2>&1\n' "$AD_BIN" "$AD_BIN" >/etc/cron.d/awgctl-rules
+    systemctl daemon-reload
+    systemctl enable awgctl-rules.service >/dev/null 2>&1 || true
+}
+
+show_link() {
+    local f="$AWG_DIR/$1.vpnuri"
+    [[ -s "$f" ]] || manage --yes regen "$1" >/dev/null 2>&1 || true
+    [[ -s "$f" ]] && cat "$f" || warn "Ссылки vpn:// нет ($f)"
+}
+
+do_add() {
+    need_installed
+    local n=${POS[0]:-} a=(--yes)
+    check_name "$n"
+    client_exists "$n" && die "Пользователь «$n» уже есть"
+    if [[ -n "$DAYS" ]]; then
+        [[ "$DAYS" =~ ^[0-9]+$ ]] && ((DAYS > 0)) || die "--days: целое число дней"
+        a+=("--expires=${DAYS}d")
+    fi
+    ((PSK)) && a+=(--psk)
+    manage "${a[@]}" add "$n" >/dev/null || die "Не удалось добавить «$n» (подробности: awgctl engine add $n)"
+    log "Добавлен: $n ($(client_ip "$n"))${DAYS:+, на $DAYS дн. — до $(date -d "@$(expiry_of "$n")" '+%d.%m.%Y')}"
+    do_show "$n"
+}
+
+do_show() {
+    need_installed
+    local n=${1:-${POS[0]:-}}
+    need_client "$n"
+    manage qr "$n" || true
+    log ""
+    log "Ссылка (Amnezia VPN / AmneziaWG → «Вставить из буфера»):"
+    show_link "$n"
+    log ""
+    log "Файл конфига: $AWG_DIR/$n.conf   (QR-картинка: $AWG_DIR/$n.png)"
+    is_off "$n" && warn "Пользователь отключён: awgctl on $n"
+    return 0
+}
+
+do_list() {
+    need_installed
+    local dump name pk ip hs rx tx st exp exp_s n=0
+    dump=$(awg show awg0 dump 2>/dev/null | tail -n +2 || true)
+    printf '%-20s %-15s %-8s %10s %10s  %-14s %s\n' "ИМЯ" "IP" "СТАТУС" "СКАЧАЛ" "ОТДАЛ" "ВХОД" "СРОК"
+    while IFS=$'\t' read -r name pk ip; do
+        [[ -n "$name" ]] || continue
+        n=$((n + 1))
+        read -r hs rx tx < <(awk -F'\t' -v k="$pk" '$1 == k {print $5, $6, $7; f=1} END {if (!f) print 0, 0, 0}' <<<"$dump")
+        exp=$(expiry_of "$name"); exp_s="∞"
+        [[ -n "$exp" ]] && exp_s=$(date -d "@$exp" '+%d.%m.%Y' 2>/dev/null || echo "$exp")
+        st="вкл"; is_off "$name" && st="ВЫКЛ"
+        # клиент скачал = сервер отправил (tx), отдал = сервер получил (rx)
+        printf '%-20s %-15s %-8s %10s %10s  %-14s %s\n' "$name" "$ip" "$st" "$(human "$tx")" "$(human "$rx")" "$(ago "$hs")" "$exp_s"
+    done < <(peers_tsv)
+    log ""
+    log "Пользователей: $n. Трафик — с последнего запуска awg0 ($(systemctl show -p ActiveEnterTimestamp --value awg-quick@awg0 2>/dev/null | cut -d' ' -f2-3))."
+}
+
+do_renew() {
+    need_installed
+    local n=${POS[0]:-} d=${POS[1]:-}
+    need_client "$n"
+    [[ "$d" =~ ^[0-9]+$ ]] || die "Использование: awgctl renew <имя> <дней> (0 — бессрочно)"
+    mkdir -p "$AWG_DIR/expiry"
+    if ((d == 0)); then
+        rm -f "$AWG_DIR/expiry/$n"; log "$n: бессрочно"
+    else
+        echo $(( $(date +%s) + d * 86400 )) >"$AWG_DIR/expiry/$n"; chmod 600 "$AWG_DIR/expiry/$n"
+        [[ -f /etc/cron.d/awg-expiry ]] || warn "Нет /etc/cron.d/awg-expiry — истёкшие не удаляются автоматически (появится после первого add --days)"
+        log "$n: до $(date -d "@$(expiry_of "$n")" '+%d.%m.%Y %H:%M') (по истечении пользователь удаляется)"
+    fi
+}
+
+do_off() {
+    need_installed
+    local n=${POS[0]:-}
+    need_client "$n"
+    mkdir -p "$AD_DIR"; touch "$OFF_LIST"; chmod 600 "$OFF_LIST"
+    is_off "$n" || echo "$n" >>"$OFF_LIST"
+    rules_persist; rules_apply
+    log "$n отключён: подключиться может, но трафик не идёт. Включить: awgctl on $n"
+}
+do_on() {
+    need_installed
+    local n=${POS[0]:-}
+    need_client "$n"
+    if [[ -f "$OFF_LIST" ]]; then grep -vxF "$n" "$OFF_LIST" >"$OFF_LIST.tmp" || true; mv -f "$OFF_LIST.tmp" "$OFF_LIST"; fi
+    rules_apply
+    log "$n включён"
+}
+
+do_uninstall() {
+    need_root
+    if ((!AUTO_YES)) && [[ -r /dev/tty ]]; then
+        local a; read -rp "Удалить AmneziaWG со всеми пользователями? (бэкап движок сделает сам) [y/N] " a </dev/tty
+        [[ "$a" =~ ^([Yy]|да|д)$ ]] || die "Отменено"
+    fi
+    [[ -f "$AD_DIR/install_amneziawg.sh" ]] || fetch_installer
+    env -u AWG_BRANCH bash "$AD_DIR/install_amneziawg.sh" --uninstall --yes || warn "Движок завершил удаление с ошибкой — см. вывод выше"
+    resume_unit_off
+    systemctl disable awgctl-rules.service >/dev/null 2>&1 || true
+    iptables -D FORWARD -i awg0 -j AWGCTL 2>/dev/null || true
+    iptables -D INPUT -i awg0 -j AWGCTL 2>/dev/null || true
+    iptables -F AWGCTL 2>/dev/null || true; iptables -X AWGCTL 2>/dev/null || true
+    rm -rf "$AD_DIR" /etc/cron.d/awgctl-rules /etc/systemd/system/awgctl-rules.service "$AD_BIN"
+    systemctl daemon-reload || true
+    log "AmneziaWG и awgctl удалены."
+}
+
+do_del() {
+    need_installed
+    local n=${POS[0]:-}
+    need_client "$n"
+    if ((!AUTO_YES)) && [[ -r /dev/tty ]]; then
+        local a; read -rp "Удалить «$n»? Его конфиг перестанет работать. [y/N] " a </dev/tty
+        [[ "$a" =~ ^([Yy]|да|д)$ ]] || die "Отменено"
+    fi
+    manage --yes remove "$n" >/dev/null || die "Не удалось удалить «$n» (awgctl engine remove $n)"
+    if [[ -f "$OFF_LIST" ]]; then grep -vxF "$n" "$OFF_LIST" >"$OFF_LIST.tmp" || true; mv -f "$OFF_LIST.tmp" "$OFF_LIST"; rules_apply; fi
+    log "Удалён: $n"
+}
+
 do_install() {
     need_root
     mkdir -p "$(dirname "$AD_LOG")"; touch "$AD_LOG"; chmod 600 "$AD_LOG"
-    log "amneziawg-autodeploy v${AD_VERSION} ($(date '+%F %T'))"
+    log "amneziawgctl v${AD_VERSION} ($(date '+%F %T'))"
     case "$PROTOCOL" in 3.1|2.0) ;; *) die "--protocol: 3.1 или 2.0" ;; esac
     command -v jq >/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq >/dev/null 2>&1; } || die "Не удалось поставить jq"; }
     preflight
 
     hdr "План"
     installer_args
-    log "    1. Скачать install_amneziawg.sh (pin SHA256) в $AD_DIR"
+    log "    1. Скачать install_amneziawg.sh v${ENGINE_VER} (bivlked, проверка SHA256) в $AD_DIR"
     log "    2. Запустить: install_amneziawg.sh ${INST_ARGS[*]}"
-    log "       — обновит пакеты, подключит официальный PPA Amnezia (ключ с проверкой отпечатка),"
+    log "       — обновит систему, подключит официальный PPA Amnezia (ключ сверяется по отпечатку),"
     log "         соберёт модуль через DKMS, включит ufw (SSH $(ssh_port)/tcp + ${PORT}/udp), fail2ban, NAT;"
-    log "       — НЕ удаляет системные пакеты (--keep-packages), НЕ отключает IPv6 на хосте (--allow-ipv6),"
-    log "         НЕ ставит готовые .deb модуля (--no-prebuilt)."
-    log "       — 1–2 перезагрузки: после них установка продолжится сама (systemd awg-autodeploy-resume)."
+    if [[ "$KEEP_PKGS" == 1 ]]; then log "       — системные пакеты сохраняются (--keep-packages)"
+    else log "       — удалит лишние службы (snapd, packagekit, modemmanager, udisks2, unattended-upgrades…) — как советует автор для 1 ГБ RAM"; fi
+    if [[ "$KEEP_IPV6" == 1 ]]; then log "       — IPv6 на хосте оставит (--keep-ipv6)"; else log "       — отключит IPv6 на хосте"; fi
+    log "       — 1–2 перезагрузки: после них установка продолжится сама (systemd awgctl-resume)."
     log "    3. Клиенты: ${CLIENTS:-my_phone, my_laptop (по умолчанию установщика)}"
     log "    4. Итоговая проверка. Лог: $AD_LOG"
     if ((DRY_RUN)); then log ""; log "--dry-run: ничего не изменено."; exit 0; fi
-    ask "Выполнить?" || die "Отменено. Без вопросов: --yes"
 
     state_save
     self_install
@@ -459,14 +665,14 @@ do_install() {
     local rc=0; run_installer || rc=$?
     case $rc in
         0) finish ;;
-        2) log ""; log "Сервер перезагружается. Установка продолжится сама; через 3–5 минут зайди по SSH и выполни: awg-autodeploy status" ;;
-        *) resume_unit_off; die "install_amneziawg.sh завершился с ошибкой ($rc). Лог: $AWG_DIR/install_amneziawg.log. Повторить: awg-autodeploy resume" ;;
+        2) log ""; log "Сервер перезагружается. Установка продолжится сама; через 3–5 минут зайди по SSH и выполни: awgctl status" ;;
+        *) resume_unit_off; die "install_amneziawg.sh завершился с ошибкой ($rc). Лог: $AWG_DIR/install_amneziawg.log. Повторить: awgctl resume" ;;
     esac
 }
 
 do_resume() {
     need_root
-    state_load || die "Нет $AD_STATE — нечего продолжать. Новая установка: awg-autodeploy install"
+    state_load || die "Нет $AD_STATE — нечего продолжать. Новая установка: awgctl install"
     log "Продолжение установки ($(date '+%F %T'))"
     # после перезагрузки сеть может подняться не сразу
     for _ in $(seq 1 30); do getent hosts github.com >/dev/null && break; sleep 2; done
@@ -475,7 +681,7 @@ do_resume() {
     case $rc in
         0) finish ;;
         2) log "Ещё одна перезагрузка — продолжу после неё." ;;
-        *) resume_unit_off; log "install_amneziawg.sh: ошибка ($rc). Лог: $AWG_DIR/install_amneziawg.log. Повторить: awg-autodeploy resume"; exit "$rc" ;;
+        *) resume_unit_off; log "install_amneziawg.sh: ошибка ($rc). Лог: $AWG_DIR/install_amneziawg.log. Повторить: awgctl resume"; exit "$rc" ;;
     esac
 }
 
@@ -489,14 +695,17 @@ finish() {
 
 do_status() {
     if [[ -f "$AD_DIR/finished" ]]; then log "Установка завершена: $(cut -d' ' -f2- "$AD_DIR/finished")"; post_check || true; return; fi
-    if systemctl is-enabled --quiet awg-autodeploy-resume.service 2>/dev/null; then
+    if systemctl is-enabled --quiet awgctl-resume.service 2>/dev/null; then
         log "Установка ещё идёт (шаг установщика: $(cat "$AWG_DIR/setup_state" 2>/dev/null || echo ?)). Последние строки лога:"
         tail -n 15 "$AD_LOG" 2>/dev/null || true
     else
-        log "Установка не запущена или прервана. Лог: $AD_LOG; продолжить: awg-autodeploy resume"
+        log "Установка не запущена или прервана. Лог: $AD_LOG; продолжить: awgctl resume"
         tail -n 15 "$AD_LOG" 2>/dev/null || true
     fi
 }
+
+# при подключении через source (тесты) — только функции
+[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 case "$CMD" in
     help) usage ;;
@@ -504,4 +713,20 @@ case "$CMD" in
     resume) do_resume ;;
     status) need_root; do_status ;;
     check) need_root; post_check ;;
+    add) do_add ;;
+    list|ls) do_list ;;
+    show) do_show "${POS[0]:-}" ;;
+    qr) need_installed; need_client "${POS[0]:-}"; manage qr "${POS[0]}" ;;
+    link) need_installed; need_client "${POS[0]:-}"; show_link "${POS[0]}" ;;
+    conf) need_installed; need_client "${POS[0]:-}"; cat "$AWG_DIR/${POS[0]}.conf" ;;
+    renew) do_renew ;;
+    off) do_off ;;
+    on) do_on ;;
+    del|rm|remove) do_del ;;
+    backup) need_installed; manage --yes backup ;;
+    restore) need_installed; manage restore "${POS[@]}" ;;
+    engine) need_installed; manage "${EXTRA[@]+"${EXTRA[@]}"}" ;;
+    uninstall) do_uninstall ;;
+    _rules) [[ -f "$SERVER_CONF" ]] && rules_apply ;;
+    *) die "Неизвестная команда: $CMD (awgctl help)" ;;
 esac
