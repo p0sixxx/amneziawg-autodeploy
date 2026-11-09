@@ -310,8 +310,11 @@ external_check() { # не заблокирован ли IP в России
 fetch_installer() {
     local f="$AD_DIR/install_amneziawg.sh" src
     mkdir -p "$AD_DIR"; chmod 700 "$AD_DIR"
-    src="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo /)")/install_amneziawg.sh"
-    if [[ -f "$src" && "$src" != "$f" ]]; then   # запуск из клона репозитория
+    local dir; dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo /)")"
+    src="$dir/install_amneziawg.sh"
+    # локальную копию берём только из клона ЭТОГО репозитория (рядом .git и AUDIT.md),
+    # а не любой install_amneziawg.sh, случайно лежащий рядом (например, upstream в /root)
+    if [[ -f "$src" && "$src" != "$f" && -d "$dir/.git" && -f "$dir/AUDIT.md" ]]; then
         cp -f "$src" "$f.new"
     else
         curl -fsSL --max-time 120 -o "$f.new" "$AD_REPO_RAW/$AD_REF/install_amneziawg.sh" || die "Не удалось скачать install_amneziawg.sh"
@@ -319,7 +322,7 @@ fetch_installer() {
     local got; got=$(sha256sum "$f.new" | awk '{print $1}')
     if [[ "$INSTALLER_SHA256" != "__INSTALLER_SHA256__" && "$got" != "$INSTALLER_SHA256" ]]; then
         rm -f "$f.new"
-        die "SHA256 install_amneziawg.sh не совпал (ожидался $INSTALLER_SHA256, получен $got). Файл мог быть подменён."
+        die "SHA256 install_amneziawg.sh не совпал (ожидался $INSTALLER_SHA256, получен $got). Файл мог быть подменён, или обёртка устарела: скачай autodeploy.sh заново."
     fi
     chmod 700 "$f.new"; mv -f "$f.new" "$f"
     log "    install_amneziawg.sh: SHA256 $got"
