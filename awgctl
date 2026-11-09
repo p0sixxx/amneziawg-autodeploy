@@ -13,7 +13,7 @@
 # shellcheck disable=SC2015  # ok/warn/fail всегда возвращают 0
 set -Eeuo pipefail
 
-AD_VERSION="2.1.1"
+AD_VERSION="2.1.3"
 AD_REPO_RAW="${AD_REPO_RAW:-https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy}"
 AD_REF="${AD_REF:-main}"
 # Движок: релиз bivlked/amneziawg-installer. Смена версии — только после аудита (AUDIT.md),
@@ -121,7 +121,7 @@ awgctl — AmneziaWG: установка и управление пользов�
 Дополнения
   awgctl adblock [on|off|status] блокировка рекламы и трекеров по DNS (Blocky + списки Hagezi)
   awgctl bot                     Telegram-бот awgram: пользователи с телефона
-  awgctl bot fix                 починить доступ бота к /root/awg (если ставил его сам)
+  awgctl bot fix                 бот падает с «manage_script не найден» — перевести его в режим root
   awgctl engine <команда …>      любая команда manage_amneziawg.sh (diagnose, stats, regen…)
   awgctl help
 HELP
@@ -777,21 +777,16 @@ do_adblock() {
 }
 
 # ------------------------------------------------------------------ дополнения: Telegram-бот awgram
-bot_fix_access() { # hardened: пользователь awgram должен пройти через /root (на Ubuntu там 700) к /root/awg
-    id -u awgram >/dev/null 2>&1 || return 0
-    command -v setfacl >/dev/null || return 0
-    local d=$AWG_DIR
-    while [[ "$d" != / ]]; do d=$(dirname "$d"); [[ "$d" == / ]] || setfacl -m u:awgram:x "$d"; done
-    setfacl -R -m u:awgram:rx "$AWG_DIR" 2>/dev/null || true
-    setfacl -R -d -m u:awgram:rx "$AWG_DIR" 2>/dev/null || true
-    if sudo -u awgram test -r "$AWG_DIR/manage_amneziawg.sh" 2>/dev/null; then
-        ok "Бот видит $AWG_DIR (право прохода через $(dirname "$AWG_DIR") без чтения её содержимого)"
-        systemctl restart awgram 2>/dev/null || true
-        sleep 3
-        systemctl is-active --quiet awgram && ok "awgram работает" || warn "awgram не запустился: journalctl -u awgram -n 20"
-    else
-        warn "Пользователь awgram не видит $AWG_DIR/manage_amneziawg.sh — проверь права вручную"
-    fi
+bot_check() {
+    sleep 3
+    if systemctl is-active --quiet awgram; then ok "awgram работает — напиши своему боту /start"
+    else warn "awgram не запустился:"; journalctl -u awgram -n 8 --no-pager 2>/dev/null | sed 's/^/        /'; fi
+}
+
+bot_fix() { # бот, поставленный в режиме hardened, переводится в root (см. комментарий в do_bot)
+    command -v awgram-setup >/dev/null || die "awgram не установлен: awgctl bot"
+    awgram-setup install --mode root --yes || die "Не удалось перенастроить awgram"
+    bot_check
 }
 
 do_bot() {
@@ -812,12 +807,14 @@ do_bot() {
     fetch_pinned "https://github.com/ekuraev/awgram/releases/download/${AWGRAM_VER}/install.sh" "$f" "$AWGRAM_SETUP_SHA256" \
         || die "Не удалось скачать установщик awgram"
     # токен — через окружение: не попадает в ps и историю shell
-    command -v setfacl >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq acl >/dev/null 2>&1 || true
-    local rc=0
-    AWGRAM_TOKEN="$TG_TOKEN" bash "$f" install --lang ru --mode hardened --admins "$TG_ADMINS" --version "$AWGRAM_VER" --yes || rc=$?
-    bot_fix_access
-    ((rc == 0)) || systemctl is-active --quiet awgram || die "Установка awgram не удалась (подробности выше)"
-    ok "Бот установлен (режим hardened). Напиши своему боту /start в Telegram"
+    # Режим root, а не hardened: движок ставит chmod 700/600 на /root, /root/awg и файлы клиентов,
+    # это обнуляет ACL-маску, и пользователь awgram перестаёт видеть скрипт и новые конфиги.
+    # Изоляции hardened почти не даёт: sudoers всё равно разрешает ему manage_amneziawg.sh с любыми
+    # аргументами (включая restore), а это равносильно root.
+    AWGRAM_TOKEN="$TG_TOKEN" bash "$f" install --lang ru --mode root --admins "$TG_ADMINS" \
+        --script-path "$AWG_DIR/manage_amneziawg.sh" --version "$AWGRAM_VER" --yes \
+        || die "Установка awgram не удалась (подробности выше)"
+    bot_check
     log "    Управление ботом: awgram-setup status | update | config | uninstall"
     log "    Токен даёт полный контроль над VPN — не пересылай его."
 }
@@ -948,7 +945,7 @@ case "$CMD" in
     engine) need_installed; manage "${EXTRA[@]+"${EXTRA[@]}"}" ;;
     uninstall) do_uninstall ;;
     adblock) do_adblock ;;
-    bot) if [[ "${POS[0]:-}" == fix ]]; then need_installed; bot_fix_access; else do_bot; fi ;;
+    bot) if [[ "${POS[0]:-}" == fix ]]; then need_root; bot_fix; else do_bot; fi ;;
     _rules) [[ -f "$SERVER_CONF" ]] && rules_apply ;;
     *) die "Неизвестная команда: $CMD (awgctl help)" ;;
 esac
