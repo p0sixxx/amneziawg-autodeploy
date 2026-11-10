@@ -145,7 +145,7 @@ STUB
     need_installed() { :; }
     TG_TOKEN="bad"; TG_ADMINS="123"
     run do_bot; [ "$status" -ne 0 ]; [[ "$output" == *"Токен"* ]]
-    TG_TOKEN="123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; TG_ADMINS="12a"
+    TG_TOKEN="123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; TG_ADMINS="abc"
     run do_bot; [ "$status" -ne 0 ]; [[ "$output" == *"Telegram ID"* ]]
 }
 
@@ -198,4 +198,12 @@ STUB
     [ "$(grep -c '^export AWG_I2=' "$AWG_DIR/awgsetup_cfg.init")" = 1 ]
     grep -q "manage --yes regen" "$T/manage.log"
     obfs_apply >/dev/null; [ "$(grep -c '^I2 = ' "$SERVER_CONF")" = 1 ]   # повторно не дублирует
+}
+
+@test "bot: ID с пробелами, \\r и невидимыми символами из буфера принимаются" {
+    need_installed() { :; }
+    fetch_pinned() { return 1; }   # дальше проверки не идём
+    TG_TOKEN=$' 123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r'; TG_ADMINS=$'204004858,\u200b 922458929\r'
+    run do_bot
+    [[ "$output" == *"Не удалось скачать установщик awgram"* ]]
 }

@@ -806,6 +806,9 @@ do_bot() {
         [[ -r /dev/tty ]] || die "Нужен Telegram ID: --tg-admins=ID"
         read -rp "    Твой Telegram ID (от @userinfobot; несколько — через запятую): " TG_ADMINS </dev/tty
     fi
+    # вставка из буфера часто приносит пробелы, \r и невидимые символы — оставляем только допустимые
+    TG_TOKEN=$(printf '%s' "$TG_TOKEN" | LC_ALL=C tr -cd 'A-Za-z0-9:_-')
+    TG_ADMINS=$(printf '%s' "$TG_ADMINS" | LC_ALL=C tr -cd '0-9,' | sed 's/,,*/,/g; s/^,//; s/,$//')
     [[ "$TG_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] || die "Токен не похож на токен бота (вида 123456:ABC…)"
     [[ "$TG_ADMINS" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "Telegram ID — числа через запятую"
     local f="$AD_DIR/awgram-install.sh"
@@ -840,7 +843,10 @@ ask_extras() { # в начале установки: после перезагр
     if [[ "$WANT_BOT" == 1 ]]; then
         [[ -n "$TG_TOKEN" ]] || { read -rsp "    Токен бота от @BotFather (ввод скрыт): " TG_TOKEN </dev/tty; echo; }
         [[ -n "$TG_ADMINS" ]] || read -rp "    Твой Telegram ID (от @userinfobot): " TG_ADMINS </dev/tty
-        [[ "$TG_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] || die "Токен не похож на токен бота (вида 123456:ABC…)"
+        # вставка из буфера часто приносит пробелы, \r и невидимые символы — оставляем только допустимые
+    TG_TOKEN=$(printf '%s' "$TG_TOKEN" | LC_ALL=C tr -cd 'A-Za-z0-9:_-')
+    TG_ADMINS=$(printf '%s' "$TG_ADMINS" | LC_ALL=C tr -cd '0-9,' | sed 's/,,*/,/g; s/^,//; s/,$//')
+    [[ "$TG_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] || die "Токен не похож на токен бота (вида 123456:ABC…)"
         [[ "$TG_ADMINS" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "Telegram ID — числа через запятую"
     fi
 }
