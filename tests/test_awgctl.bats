@@ -115,8 +115,8 @@ STUB
     [[ " ${INST_ARGS[*]} " == *" --yes "* && " ${INST_ARGS[*]} " == *" --no-prebuilt "* ]]
     [[ " ${INST_ARGS[*]} " == *" --disallow-ipv6 "* ]]
     [[ " ${INST_ARGS[*]} " != *" --keep-packages "* ]]
-    SRV_NAME="Nebula Sweden"; installer_args
-    [[ " ${INST_ARGS[*]} " == *" --server-name=Nebula Sweden "* ]]
+    SRV_NAME="My VPN"; installer_args
+    [[ " ${INST_ARGS[*]} " == *" --server-name=My VPN "* ]]
     KEEP_PKGS=1; KEEP_IPV6=1; installer_args
     [[ " ${INST_ARGS[*]} " == *" --keep-packages "* && " ${INST_ARGS[*]} " == *" --allow-ipv6 "* ]]
     [[ "$ENGINE_SHA256" =~ ^[0-9a-f]{64}$ ]]
