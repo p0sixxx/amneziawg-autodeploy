@@ -167,3 +167,35 @@ STUB
     installer_args
     for a in "${INST_ARGS[@]}"; do [ -n "$a" ]; done
 }
+
+@test "обфускация QUIC: формат I1-I5, уникальность, --i1 у движка" {
+    for _ in $(seq 1 50); do
+        x=$(gen_quic_cps)
+        [[ "$x" =~ ^\<b\ 0xc[0-3]00000001[0-9a-f]{2}[0-9a-f]+\>\<rc\ [0-9]+\>\<t\>\<r\ [0-9]+\>$ ]]
+        [[ "$x" != *"<c>"* ]]
+    done
+    OBFS=quic; CPS_I1=""; gen_cps_set
+    [ -n "$CPS_I5" ] && [ "$CPS_I1" != "$CPS_I2" ]
+    first=$CPS_I1; gen_cps_set; [ "$CPS_I1" = "$first" ]   # при продолжении не меняются
+    PORT=1; PROTOCOL=3.1; MOBILE=0; ENDPOINT=""; SRV_NAME=""; KEEP_PKGS=0; KEEP_IPV6=0; EXTRA=()
+    installer_args
+    [[ " ${INST_ARGS[*]} " == *" --i1=$CPS_I1 "* ]]
+    OBFS=engine; installer_args
+    [[ " ${INST_ARGS[*]} " != *"--i1="* ]]
+}
+
+@test "обфускация QUIC: I1-I5 заменяют прежние после H4, init движка обновляется" {
+    printf '[Interface]\nPrivateKey = x\nH4 = 4\nI1 = <b 0xdead>\nHeaderProtectionKey = k\n\n[Peer]\n#_Name = a\nI1 = чужое\n' >"$SERVER_CONF"
+    printf "export AWG_I1='<b 0xdead>'\nexport AWG_I2=''\n" >"$AWG_DIR/awgsetup_cfg.init"
+    OBFS=quic; CPS_I1="<b 0x01>"; CPS_I2="<b 0x02>"; CPS_I3="<b 0x03>"; CPS_I4="<b 0x04>"; CPS_I5="<b 0x05>"
+    obfs_apply >/dev/null
+    run sed -n '3,9p' "$SERVER_CONF"
+    [ "${lines[0]}" = "H4 = 4" ] && [ "${lines[1]}" = "I1 = <b 0x01>" ] && [ "${lines[5]}" = "I5 = <b 0x05>" ] && [ "${lines[6]}" = "HeaderProtectionKey = k" ]
+    ! grep -q 'dead' "$SERVER_CONF"
+    grep -q '^I1 = чужое' "$SERVER_CONF"   # секции [Peer] не трогаются
+    grep -qx "export AWG_I2='<b 0x02>'" "$AWG_DIR/awgsetup_cfg.init"
+    grep -qx "export AWG_I1_PIN='<b 0x01>'" "$AWG_DIR/awgsetup_cfg.init"
+    [ "$(grep -c '^export AWG_I2=' "$AWG_DIR/awgsetup_cfg.init")" = 1 ]
+    grep -q "manage --yes regen" "$T/manage.log"
+    obfs_apply >/dev/null; [ "$(grep -c '^I2 = ' "$SERVER_CONF")" = 1 ]   # повторно не дублирует
+}

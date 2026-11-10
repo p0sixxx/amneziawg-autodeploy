@@ -56,7 +56,7 @@ trap 'rc=$?; [[ $rc -ne 0 ]] && printf "Ошибка в строке %s (код 
 # ------------------------------------------------------------------ аргументы
 CMD=""; POS=(); DRY_RUN=0; AUTO_YES=0; PORT="${PORT:-}"; MOBILE="${MOBILE:-0}"; PROTOCOL="${PROTOCOL:-3.1}"
 ENDPOINT="${ENDPOINT:-}"; CLIENTS="${CLIENTS:-}"; ALLOW_BLOCKED="${ALLOW_BLOCKED:-0}"; SKIP_EXT="${SKIP_EXTERNAL_CHECK:-0}"
-SRV_NAME="${SERVER_NAME:-}"; WANT_ADBLOCK=""; WANT_BOT=""; TG_TOKEN="${AWGRAM_TOKEN:-}"; TG_ADMINS=""; DAYS=""; PSK=0; KEEP_PKGS="${KEEP_PACKAGES:-0}"; KEEP_IPV6="${KEEP_IPV6:-0}"; EXTRA=()
+SRV_NAME="${SERVER_NAME:-}"; WANT_ADBLOCK=""; WANT_BOT=""; TG_TOKEN="${AWGRAM_TOKEN:-}"; TG_ADMINS=""; DAYS=""; PSK=0; KEEP_PKGS="${KEEP_PACKAGES:-0}"; KEEP_IPV6="${KEEP_IPV6:-0}"; OBFS="${OBFS:-quic}"; CPS_I1=""; CPS_I2=""; CPS_I3=""; CPS_I4=""; CPS_I5=""; EXTRA=()
 if [[ "${1:-}" == engine ]]; then CMD=engine; shift; EXTRA=("$@"); set --; fi   # всё дальше — как есть в manage_amneziawg.sh
 while (($#)); do
     case "$1" in
@@ -68,6 +68,7 @@ while (($#)); do
         --endpoint=*) ENDPOINT=${1#*=} ;;
         --clients=*) CLIENTS=${1#*=} ;;
         --name=*) SRV_NAME=${1#*=} ;;
+        --obfs=*) OBFS=${1#*=} ;;
         --adblock) WANT_ADBLOCK=1 ;;
         --bot) WANT_BOT=1 ;;
         --tg-admins=*) TG_ADMINS=${1#*=}; WANT_BOT=1 ;;
@@ -95,7 +96,7 @@ awgctl — AmneziaWG: установка и управление пользов�
 Установка
   awgctl install [--dry-run] [--name="Имя"] [--port=N | --mobile] [--protocol=3.1|2.0] [--clients=a,b]
                  [--endpoint=АДРЕС] [--keep-packages] [--keep-ipv6] [--allow-blocked-ip] [--skip-external-check]
-                 [--adblock] [--bot --tg-admins=ID] [--no-extras]
+                 [--adblock] [--bot --tg-admins=ID] [--no-extras] [--obfs=quic|engine]
                  случайный порт, IPv6 хоста выключен, лишние пакеты удаляются; в начале спросит
                  про блокировщик рекламы и Telegram-бот (или задай флагами)
                  [-- флаги install_amneziawg.sh]
@@ -117,6 +118,10 @@ awgctl — AmneziaWG: установка и управление пользов�
   awgctl check                   проверка: сервис, порт, NAT, ufw, IP из России (check-host.net)
   awgctl backup | restore [файл] бэкап ключей и клиентов / восстановление
   awgctl uninstall               удалить AmneziaWG и awgctl
+
+Обфускация
+  awgctl obfs [show]             текущие параметры (S, H, I1-I5, CPA…)
+  awgctl obfs quic               новые уникальные I1-I5 под QUIC на сервер и во все профили
 
 Дополнения
   awgctl adblock [on|off|status] блокировка рекламы и трекеров по DNS (Blocky + списки Hagezi)
@@ -211,7 +216,7 @@ repo_get() { # repo_get <путь в репо> <куда>
 state_save() {
     mkdir -p "$AD_DIR"; chmod 700 "$AD_DIR"
     {
-        printf 'PORT=%q\nPROTOCOL=%q\nENDPOINT=%q\nCLIENTS=%q\nMOBILE=%q\nKEEP_PKGS=%q\nKEEP_IPV6=%q\nSRV_NAME=%q\nWANT_ADBLOCK=%q\nWANT_BOT=%q\nTG_TOKEN=%q\nTG_ADMINS=%q\n' "$PORT" "$PROTOCOL" "$ENDPOINT" "$CLIENTS" "$MOBILE" "$KEEP_PKGS" "$KEEP_IPV6" "$SRV_NAME" "$WANT_ADBLOCK" "$WANT_BOT" "$TG_TOKEN" "$TG_ADMINS"
+        printf 'PORT=%q\nPROTOCOL=%q\nENDPOINT=%q\nCLIENTS=%q\nMOBILE=%q\nKEEP_PKGS=%q\nKEEP_IPV6=%q\nSRV_NAME=%q\nWANT_ADBLOCK=%q\nWANT_BOT=%q\nTG_TOKEN=%q\nTG_ADMINS=%q\nOBFS=%q\nCPS_I1=%q\nCPS_I2=%q\nCPS_I3=%q\nCPS_I4=%q\nCPS_I5=%q\n' "$PORT" "$PROTOCOL" "$ENDPOINT" "$CLIENTS" "$MOBILE" "$KEEP_PKGS" "$KEEP_IPV6" "$SRV_NAME" "$WANT_ADBLOCK" "$WANT_BOT" "$TG_TOKEN" "$TG_ADMINS" "$OBFS" "$CPS_I1" "$CPS_I2" "$CPS_I3" "$CPS_I4" "$CPS_I5"
         # пустой массив: printf '%q ' без аргументов печатает '' — это сломало бы установщик
         printf 'EXTRA=('; ((${#EXTRA[@]})) && printf '%q ' "${EXTRA[@]}"; printf ')\n'
         printf 'PUBLIC_IP=%q\n' "${PUBLIC_IP:-}"
@@ -393,6 +398,7 @@ installer_args() {
     [[ "$MOBILE" == 1 ]] && INST_ARGS+=(--preset=mobile)
     [[ -n "$ENDPOINT" ]] && INST_ARGS+=("--endpoint=$ENDPOINT")
     [[ -n "$SRV_NAME" ]] && INST_ARGS+=("--server-name=$SRV_NAME")
+    [[ "$OBFS" == quic && -n "$CPS_I1" ]] && INST_ARGS+=("--i1=$CPS_I1")
     INST_ARGS+=("${EXTRA[@]+"${EXTRA[@]}"}")
 }
 
@@ -869,11 +875,13 @@ do_install() {
     if [[ "$KEEP_IPV6" == 1 ]]; then log "       — IPv6 на хосте оставит (--keep-ipv6)"; else log "       — отключит IPv6 на хосте"; fi
     log "       — 1–2 перезагрузки: после них установка продолжится сама (systemd awgctl-resume)."
     log "       — имя сервера в приложении: ${SRV_NAME:-AWG Server (по умолчанию движка)}"
+    log "       — обфускация: $([[ "$OBFS" == quic ]] && echo "3.1 + свои I1-I5 под QUIC (уникальные для сервера)" || echo "как у движка (I1 под DNS)")"
     log "    3. Клиенты: ${CLIENTS:-my_phone, my_laptop (по умолчанию установщика)}"
     log "    4. Дополнения: блокировщик рекламы — $([[ "${WANT_ADBLOCK:-0}" == 1 ]] && echo да || echo нет), Telegram-бот — $([[ "${WANT_BOT:-0}" == 1 ]] && echo да || echo нет)"
     log "    5. Итоговая проверка. Лог: $AD_LOG"
     if ((DRY_RUN)); then log ""; log "--dry-run: ничего не изменено."; exit 0; fi
 
+    gen_cps_set
     state_save
     self_install
     fetch_installer
@@ -901,8 +909,86 @@ do_resume() {
     esac
 }
 
+# ------------------------------------------------------------------ обфускация: маскирующие пакеты I1-I5
+# Профиль «quic»: I1-I5 — пять разных пакетов, похожих на QUIC Initial (как в генераторах для 3.1),
+# уникальные для каждого сервера. Движок сам пишет I1 (под DNS) и не трогает I2-I5; здесь I1 передаётся
+# ему флагом --i1, а I2-I5 дописываются в awg0.conf после установки и расходятся по профилям через regen.
+# Остальное в профиле 3.1 делает движок: HeaderProtectionKey (свой на сервер), ContentPaddingAddition,
+# H1-H4 = 1·2·3·4, S1-S4 >= 12; DisableCookies выключен.
+# НЕ включаются: RandomTrailers (замер автора движка: вместе с остальной обфускацией скорость падает
+# в 85-133 раза) и таймеры Rekey*/Keepalive* (клиентские параметры: движок не пишет их в профили).
+rand_hex() { od -An -tx1 -N"$1" /dev/urandom | tr -d ' \n'; }
+rand_int() { echo $(( $1 + $(od -An -tu4 -N4 /dev/urandom | tr -d ' ') % ($2 - $1 + 1) )); }
+gen_quic_cps() { # один пакет: long header QUIC v1 (первый байт c0-c3), DCID 8-20 байт, затем случайные данные
+    local first dl
+    first=$(printf '%02x' $((0xc0 + $(rand_int 0 3))))
+    dl=$(rand_int 8 20)
+    printf '<b 0x%s00000001%02x%s00%s><rc %d><t><r %d>' \
+        "$first" "$dl" "$(rand_hex "$dl")" "$(rand_hex "$(rand_int 12 28)")" "$(rand_int 6 12)" "$(rand_int 40 130)"
+}
+gen_cps_set() {
+    [[ "$OBFS" == quic ]] || return 0
+    [[ -n "$CPS_I1" ]] && return 0   # уже сгенерированы (продолжение установки)
+    CPS_I1=$(gen_quic_cps); CPS_I2=$(gen_quic_cps); CPS_I3=$(gen_quic_cps); CPS_I4=$(gen_quic_cps); CPS_I5=$(gen_quic_cps)
+}
+
+obfs_apply() { # I1-I5 в сервер и во все профили клиентов (идемпотентно)
+    [[ "$OBFS" == quic && -n "$CPS_I1" ]] || return 0
+    hdr "Маскирующие пакеты I1-I5 (профиль QUIC)"
+    local i v tmp init="$AWG_DIR/awgsetup_cfg.init" cur1 cur2
+    cur1=$(sed -n 's/^I1 = //p' "$SERVER_CONF" | head -1); cur2=$(sed -n 's/^I2 = //p' "$SERVER_CONF" | head -1)
+    if [[ "$cur1" == "$CPS_I1" && "$cur2" == "$CPS_I2" ]]; then ok "I1-I5 уже на месте"; return 0; fi
+    tmp=$(mktemp)
+    # в [Interface]: старые I1-I5 убрать, новые вставить сразу после H4
+    awk -v i1="$CPS_I1" -v i2="$CPS_I2" -v i3="$CPS_I3" -v i4="$CPS_I4" -v i5="$CPS_I5" '
+        /^\[/ { inif = ($0 ~ /^\[Interface\]/) }
+        inif && /^I[1-5] = / { next }
+        { print }
+        inif && /^H4 = / && !done { print "I1 = " i1; print "I2 = " i2; print "I3 = " i3; print "I4 = " i4; print "I5 = " i5; done = 1 }
+        END { if (!done) exit 3 }' "$SERVER_CONF" >"$tmp" || { rm -f "$tmp"; warn "В $SERVER_CONF нет H4 — I1-I5 не записаны"; return 0; }
+    cp -a "$SERVER_CONF" "$SERVER_CONF.awgctl-bak"
+    cat "$tmp" >"$SERVER_CONF"; rm -f "$tmp"
+    # init движка держим в согласии с awg0.conf; AWG_I1_PIN — чтобы движок не заменил I1 своим
+    if [[ -f "$init" ]]; then
+        for i in 1 2 3 4 5; do
+            v="CPS_I$i"; v=${!v}
+            sed -i "/^export AWG_I${i}=/d" "$init"
+            printf "export AWG_I%s='%s'\n" "$i" "$v" >>"$init"
+        done
+        sed -i "/^export AWG_I1_PIN=/d" "$init"; printf "export AWG_I1_PIN='%s'\n" "$CPS_I1" >>"$init"
+    fi
+    if manage --yes restart >/dev/null 2>&1 && manage --yes regen >/dev/null 2>&1; then
+        ok "I1-I5 записаны в сервер и во все профили клиентов"
+        return 0
+    fi
+    cp -a "$SERVER_CONF.awgctl-bak" "$SERVER_CONF"; manage --yes restart >/dev/null 2>&1 || true
+    warn "Движок не принял новые I1-I5 — вернул прежний конфиг. Подробности: awgctl engine check"
+    return 1
+}
+
+do_obfs() {
+    need_installed
+    case "${POS[0]:-show}" in
+        show)
+            log "Параметры обфускации сервера ($SERVER_CONF):"
+            grep -E '^(Jc|Jmin|Jmax|S[1-4]|H[1-4]|I[1-5]|ContentPaddingAddition|RekeyAfterTime|KeepaliveTimeout|RandomTrailers|DisableCookies) = ' "$SERVER_CONF" | sed 's/^/    /'
+            grep -q '^HeaderProtectionKey = ' "$SERVER_CONF" && log "    HeaderProtectionKey = (задан, скрыт)" || log "    HeaderProtectionKey — нет (профиль 2.0)"
+            ;;
+        quic)
+            OBFS=quic; CPS_I1=""; gen_cps_set
+            obfs_apply || exit 1
+            log ""
+            log "Новые I1-I5 действуют для клиентов после переимпорта профиля: awgctl show <имя>."
+            log "Старые профили продолжают работать (I1-I5 не обязаны совпадать), просто без новой маскировки."
+            ;;
+        *) die "awgctl obfs show|quic" ;;
+    esac
+}
+
+
 finish() {
     resume_unit_off
+    obfs_apply
     setup_clients
     install_extras
     post_check || true
@@ -945,6 +1031,7 @@ case "$CMD" in
     engine) need_installed; manage "${EXTRA[@]+"${EXTRA[@]}"}" ;;
     uninstall) do_uninstall ;;
     adblock) do_adblock ;;
+    obfs) do_obfs ;;
     bot) if [[ "${POS[0]:-}" == fix ]]; then need_root; bot_fix; else do_bot; fi ;;
     _rules) [[ -f "$SERVER_CONF" ]] && rules_apply ;;
     *) die "Неизвестная команда: $CMD (awgctl help)" ;;
