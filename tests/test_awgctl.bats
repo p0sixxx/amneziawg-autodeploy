@@ -207,3 +207,23 @@ STUB
     run do_bot
     [[ "$output" == *"Не удалось скачать установщик awgram"* ]]
 }
+
+@test "system_upgrade: update + full-upgrade с confold и защитой apt, --no-upgrade пропускает" {
+    cat >"$T/bin/apt-get" <<STUB
+#!/bin/sh
+echo "apt-get \$*" >>"$T/apt.log"
+case "\$*" in *"-s full-upgrade"*) echo "Inst a"; echo "Inst b" ;; esac
+exit 0
+STUB
+    chmod +x "$T/bin/apt-get"
+    fuser() { return 1; }
+    DO_UPGRADE=1
+    run system_upgrade
+    [ "$status" -eq 0 ]; [[ "$output" == *"Обновлено пакетов: 2"* ]]
+    grep -q -- "-o Acquire::Retries=0" "$T/apt.log"
+    grep -q -- "--force-confold" "$T/apt.log"
+    grep -q " full-upgrade" "$T/apt.log"
+    DO_UPGRADE=0; : >"$T/apt.log"
+    run system_upgrade
+    [ ! -s "$T/apt.log" ]
+}
