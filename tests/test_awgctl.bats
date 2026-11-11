@@ -227,3 +227,11 @@ STUB
     run system_upgrade
     [ ! -s "$T/apt.log" ]
 }
+
+@test "status: полный лог берётся с начала последнего запуска установки" {
+    AD_LOG="$T/awgctl.log"
+    printf '2026-11-10 10:00:00 awgctl v2.1.0 (старый запуск)\nстарое\n2026-11-12 00:30:00 awgctl v2.3.0 (2026-11-12 00:30:00)\n==> Проверка\nвывод движка\n' >"$AD_LOG"
+    [ "$(log_start_line)" = 3 ]
+    run tail -n +"$(log_start_line)" "$AD_LOG"
+    [[ "${lines[0]}" == *"awgctl v2.3.0"* ]] && [[ "$output" != *"старое"* ]] && [[ "$output" == *"вывод движка"* ]]
+}

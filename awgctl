@@ -13,7 +13,7 @@
 # shellcheck disable=SC2015  # ok/warn/fail всегда возвращают 0
 set -Eeuo pipefail
 
-AD_VERSION="2.2.0"
+AD_VERSION="2.3.0"
 AD_REPO_RAW="${AD_REPO_RAW:-https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy}"
 AD_REF="${AD_REF:-main}"
 # Движок: релиз bivlked/amneziawg-installer. Смена версии — только после аудита (AUDIT.md),
@@ -44,12 +44,15 @@ CH=https://check-host.net
 
 # ------------------------------------------------------------------ вывод
 if [[ -t 1 ]]; then C_G=$'\e[32m'; C_Y=$'\e[33m'; C_R=$'\e[31m'; C_B=$'\e[1m'; C_0=$'\e[0m'; else C_G=""; C_Y=""; C_R=""; C_B=""; C_0=""; fi
-log()  { printf '%s\n' "$*"; printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$AD_LOG" 2>/dev/null || true; }
+# под systemd (awgctl-resume) stdout и так пишется в $AD_LOG — там пишем один раз, с временем
+log()  { if [[ -n "${AWGCTL_UNIT:-}" ]]; then printf '%s %s\n' "$(date '+%F %T')" "$*"; return; fi
+         printf '%s\n' "$*"; printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$AD_LOG" 2>/dev/null || true; }
 hdr()  { log ""; log "${C_B}==> $*${C_0}"; }
 ok()   { log "    ${C_G}[OK]${C_0} $*"; }
 warn() { log "    ${C_Y}[!!]${C_0} $*"; WARNS=$((WARNS + 1)); }
 fail() { log "    ${C_R}[FAIL]${C_0} $*"; FAILS=$((FAILS + 1)); }
-die()  { printf '%s\n' "" "${C_R}[СТОП]${C_0} $*" >&2; printf '%s %s\n' "$(date '+%F %T')" "[СТОП] $*" >>"$AD_LOG" 2>/dev/null || true; exit 1; }
+die()  { printf '%s\n' "" "${C_R}[СТОП]${C_0} $*" >&2
+         [[ -n "${AWGCTL_UNIT:-}" ]] || printf '%s %s\n' "$(date '+%F %T')" "[СТОП] $*" >>"$AD_LOG" 2>/dev/null || true; exit 1; }
 WARNS=0; FAILS=0
 trap 'rc=$?; [[ $rc -ne 0 ]] && printf "Ошибка в строке %s (код %s). Лог: %s\n" "$LINENO" "$rc" "$AD_LOG" >&2' ERR
 
@@ -101,7 +104,7 @@ awgctl — AmneziaWG: установка и управление пользов�
                  сначала обновит систему; случайный порт, IPv6 хоста выключен, лишние пакеты удаляются; спросит
                  про блокировщик рекламы и Telegram-бот (или задай флагами)
                  [-- флаги install_amneziawg.sh]
-  awgctl status                  ход установки (после перезагрузок)
+  awgctl status                  полный лог установки и дальше вживую до конца (Ctrl+C — выйти из просмотра)
   awgctl resume                  продолжить прерванную установку
 
 Пользователи
@@ -256,6 +259,7 @@ ConditionPathExists=$AD_STATE
 
 [Service]
 Type=oneshot
+Environment=AWGCTL_UNIT=1
 ExecStart=$AD_BIN resume
 StandardOutput=append:$AD_LOG
 StandardError=append:$AD_LOG
@@ -409,7 +413,15 @@ run_installer() { # 0 — установка завершена; 2 — ушёл 
     local rc=0 before after lf="$AWG_DIR/install_amneziawg.log"
     before=$(grep -c 'ТРЕБУЕТСЯ ПЕРЕЗАГРУЗКА' "$lf" 2>/dev/null || true)
     # AWG_BRANCH в окружении отключил бы проверку SHA256 скриптов движка (см. AUDIT.md) — убираем
-    env -u AWG_BRANCH -u AWG_ALLOW_UNVERIFIED -u AWG_FORCE_REINSTALL bash "$AD_DIR/install_amneziawg.sh" "${INST_ARGS[@]}" || rc=$?
+    # в терминале вывод движка идёт и на экран, и в $AD_LOG — чтобы `awgctl status` показывал полный лог;
+    # под systemd (продолжение после перезагрузки) stdout службы и так пишется в $AD_LOG
+    if [[ -t 1 ]]; then
+        env -u AWG_BRANCH -u AWG_ALLOW_UNVERIFIED -u AWG_FORCE_REINSTALL bash "$AD_DIR/install_amneziawg.sh" "${INST_ARGS[@]}" 2>&1 \
+            | tee -a "$AD_LOG" || true
+        rc=${PIPESTATUS[0]}
+    else
+        env -u AWG_BRANCH -u AWG_ALLOW_UNVERIFIED -u AWG_FORCE_REINSTALL bash "$AD_DIR/install_amneziawg.sh" "${INST_ARGS[@]}" || rc=$?
+    fi
     if [[ "$(cat "$AWG_DIR/setup_state" 2>/dev/null)" == "99" ]]; then
         return 0
     fi
@@ -1032,14 +1044,85 @@ finish() {
     echo "done $(date '+%F %T')" >"$AD_DIR/finished"
 }
 
-do_status() {
-    if [[ -f "$AD_DIR/finished" ]]; then log "Установка завершена: $(cut -d' ' -f2- "$AD_DIR/finished")"; post_check || true; return; fi
-    if systemctl is-enabled --quiet awgctl-resume.service 2>/dev/null; then
-        log "Установка ещё идёт (шаг установщика: $(cat "$AWG_DIR/setup_state" 2>/dev/null || echo ?)). Последние строки лога:"
-        tail -n 15 "$AD_LOG" 2>/dev/null || true
+step_name() { # шаг движка (setup_state) → понятное название
+    case "${1:-}" in
+        0) echo "подготовка" ;;
+        1) echo "обновление и настройка системы" ;;
+        2) echo "установка AmneziaWG: PPA и сборка модуля ядра (DKMS, 2–5 минут)" ;;
+        3) echo "проверка модуля ядра" ;;
+        4) echo "фаервол ufw" ;;
+        5) echo "скрипты управления" ;;
+        6) echo "генерация ключей и конфигураций" ;;
+        7) echo "запуск сервиса" ;;
+        99) echo "завершение: клиенты, обфускация I1-I5, дополнения, проверка" ;;
+        *) echo "—" ;;
+    esac
+}
+
+progress_line() {
+    local st; st=$(cat "$AWG_DIR/setup_state" 2>/dev/null || echo 0)
+    if [[ "$st" == 99 ]]; then printf 'Этап: %s\n' "$(step_name 99)"
+    else printf 'Шаг %s из 7: %s\n' "$st" "$(step_name "$st")"; fi
+}
+
+inst_running() { # установка идёт: продолжение после перезагрузки (systemd) или первый запуск в другом окне
+    local a; a=$(systemctl is-active awgctl-resume.service 2>/dev/null || true)
+    [[ "$a" == activating || "$a" == active ]] && return 0
+    pgrep -f 'install_amneziawg\.sh' >/dev/null 2>&1
+}
+
+log_start_line() { # строка, с которой начался текущий запуск установки (последнее «awgctl vX (дата)»)
+    local n; n=$(grep -n '^[0-9-]* [0-9:]* awgctl v[0-9]' "$AD_LOG" 2>/dev/null | tail -1 | cut -d: -f1)
+    echo "${n:-1}"
+}
+
+do_status() { # пока установка идёт — показывает её полный лог и дальше вживую до конца
+    if [[ -f "$AD_DIR/finished" ]]; then
+        printf 'Установка завершена: %s. Полный лог: less -R %s\n' "$(cut -d' ' -f2- "$AD_DIR/finished")" "$AD_LOG"
+        post_check || true; return 0
+    fi
+    if ! systemctl is-enabled --quiet awgctl-resume.service 2>/dev/null; then
+        printf 'Установка не запущена или прервана. Лог последнего запуска (%s):\n\n' "$AD_LOG"
+        tail -n +"$(log_start_line)" "$AD_LOG" 2>/dev/null | tail -n 60 || true
+        printf '\nПродолжить: awgctl resume\n'
+        return 0
+    fi
+    local active; active=$(systemctl is-active awgctl-resume.service 2>/dev/null || true)
+    printf '%sУстановка идёт.%s %s' "$C_B" "$C_0" "$(progress_line)"
+    if ! inst_running; then
+        if [[ "$active" == failed ]]; then
+            printf '\nПродолжение после перезагрузки завершилось ошибкой. Лог:\n\n'
+            tail -n +"$(log_start_line)" "$AD_LOG" 2>/dev/null | tail -n 60 || true
+            printf '\nПовторить: awgctl resume\n'
+        else
+            printf '\nСейчас не выполняется — ждёт перезагрузки или запуска. Если сервер уже перезагрузился: awgctl resume\n'
+        fi
+        return 0
+    fi
+    local from; from=$(log_start_line)
+    if [[ ! -t 1 ]]; then tail -n +"$from" "$AD_LOG" 2>/dev/null || true; return 0; fi
+    printf '\nПолный лог установки с начала и дальше вживую (Ctrl+C — выйти из просмотра, установка продолжится):\n\n'
+    tail -n +"$from" -F "$AD_LOG" 2>/dev/null &
+    local tpid=$! last="" cur
+    trap 'kill "$tpid" 2>/dev/null; printf "\n\nПросмотр закрыт, установка идёт дальше. Снова: awgctl status\n"; exit 0' INT
+    while [[ ! -f "$AD_DIR/finished" ]]; do
+        inst_running || break
+        cur=$(cat "$AWG_DIR/setup_state" 2>/dev/null || true)
+        if [[ "$cur" != "$last" ]]; then
+            [[ -n "$last" ]] && printf '\n%s==> %s%s\n' "$C_B" "$(progress_line)" "$C_0"
+            last=$cur
+        fi
+        sleep 2
+    done
+    sleep 1; kill "$tpid" 2>/dev/null || true; wait "$tpid" 2>/dev/null || true
+    trap - INT
+    printf '\n'
+    if [[ -f "$AD_DIR/finished" ]]; then
+        printf '%sУстановка завершена.%s Пользователи: awgctl list, QR: awgctl show <имя>\n' "$C_G" "$C_0"
+    elif [[ -f /var/run/reboot-required ]] || grep -q 'ТРЕБУЕТСЯ ПЕРЕЗАГРУЗКА' <(tail -n 30 "$AWG_DIR/install_amneziawg.log" 2>/dev/null); then
+        printf 'Сервер уходит в перезагрузку — SSH сейчас оборвётся. Через 2–3 минуты зайди снова: awgctl status\n'
     else
-        log "Установка не запущена или прервана. Лог: $AD_LOG; продолжить: awgctl resume"
-        tail -n 15 "$AD_LOG" 2>/dev/null || true
+        printf 'Установка остановилась. Последние строки — выше. Повторить: awgctl resume\n'
     fi
 }
 
