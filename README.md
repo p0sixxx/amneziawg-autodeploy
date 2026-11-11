@@ -10,7 +10,7 @@
 
 ```bash
 curl -fsSLo /root/awgctl https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy/main/awgctl
-bash /root/awgctl install --name="My VPN" --clients=phone,laptop
+bash /root/awgctl install --name="My server" --clients=phone,laptop
 ```
 
 В начале скрипт задаст два вопроса — ставить ли блокировщик рекламы и Telegram-бот (можно ответить флагами, см. ниже). Дальше всё идёт само: сервер 1–2 раза перезагрузится, после каждой перезагрузки установка продолжится без твоего участия. Через 3–5 минут зайди по SSH:
@@ -37,7 +37,7 @@ awgctl show phone  # QR и ссылка vpn://
 | Параметр | Что |
 |---|---|
 | `--dry-run` | только проверки и план, ничего не меняет |
-| `--name="My VPN"` | имя сервера в приложениях Amnezia (по умолчанию «AWG Server») |
+| `--name="My server"` | имя сервера в приложениях Amnezia (по умолчанию «AWG Server») |
 | `--clients=a,b` | пользователи сразу (иначе `my_phone`, `my_laptop`) |
 | `--port=N` | свой порт вместо случайного |
 | `--mobile` | 443/udp и пресет для мобильных операторов |
