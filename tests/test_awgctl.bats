@@ -133,9 +133,9 @@ STUB
 }
 
 @test "дополнения: без терминала по умолчанию не ставятся, флаги сохраняются" {
-    WANT_ADBLOCK=""; WANT_BOT=""; WANT_GUARD=""
+    WANT_ADBLOCK=""; WANT_BOT=""; WANT_GUARD=""; WANT_RU=""
     ask_extras </dev/null
-    [ "$WANT_ADBLOCK" = 0 ] && [ "$WANT_BOT" = 0 ] && [ "$WANT_GUARD" = 0 ]
+    [ "$WANT_ADBLOCK" = 0 ] && [ "$WANT_BOT" = 0 ] && [ "$WANT_GUARD" = 0 ] && [ "$WANT_RU" = off ]
     WANT_ADBLOCK=1; WANT_BOT=""; WANT_GUARD=1
     ask_extras </dev/null
     [ "$WANT_ADBLOCK" = 1 ] && [ "$WANT_GUARD" = 1 ]
@@ -265,4 +265,27 @@ STUB
     [[ "$GUARD_LISTS" == https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/* ]]
     run bash "$ROOT/awgctl" help; [[ "$output" == *"awgctl guard"* && "$output" == *"--guard"* ]]
     run bash "$ROOT/awgctl" guard bogus; [ "$status" -ne 0 ]
+}
+
+@test "ru: правила observe и block, порядок счётчиков, IPv6" {
+    run ru_rule_specs awgctl_ru 0 0
+    [ "${#lines[@]}" -eq 6 ]
+    [ "${lines[0]}" = "-i awg0" ] && [ "${lines[1]}" = "-o awg0" ]
+    [[ "${lines[2]}" == "-o awg0 -m set --match-set awgctl_ru src" && "${lines[3]}" == "-i awg0 -m set --match-set awgctl_ru dst" ]]
+    [[ "${lines[4]}" == *"-j LOG"* && "${lines[5]}" == *"--ctstate NEW"* && "$output" != *REJECT* ]]
+    run ru_rule_specs awgctl_ru 1 0
+    [ "${#lines[@]}" -eq 8 ]
+    [[ "${lines[6]}" == *"-p tcp -j REJECT --reject-with tcp-reset" && "${lines[7]}" == *"icmp-port-unreachable" ]]
+    run ru_rule_specs awgctl_ru6 1 1
+    [[ "${lines[7]}" == *"icmp6-port-unreachable" && "$output" == *"awgctl_ru6"* ]]
+}
+
+@test "ru: режим по умолчанию off, неверный --ru — отказ, список закреплён" {
+    AD_DIR="$T/ad"
+    [ "$(ru_mode)" = off ]
+    mkdir -p "$T/ad/ru"; echo block >"$T/ad/ru/mode"; [ "$(ru_mode)" = block ]
+    [[ "$RU_LIST" == https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/ru.txt ]]
+    (( RU_MIN > 0 && RU_MAX > RU_MIN ))
+    run bash "$ROOT/awgctl" install --ru=maybe --dry-run; [ "$status" -ne 0 ]
+    run bash "$ROOT/awgctl" help; [[ "$output" == *"awgctl ru"* && "$output" == *"--ru=observe|block|off"* ]]
 }
