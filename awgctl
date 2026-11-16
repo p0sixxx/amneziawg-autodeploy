@@ -13,7 +13,7 @@
 # shellcheck disable=SC2015  # ok/warn/fail всегда возвращают 0
 set -Eeuo pipefail
 
-AD_VERSION="2.3.0"
+AD_VERSION="2.4.0"
 AD_REPO_RAW="${AD_REPO_RAW:-https://raw.githubusercontent.com/p0sixxx/amneziawg-autodeploy}"
 AD_REF="${AD_REF:-main}"
 # Движок: релиз bivlked/amneziawg-installer. Смена версии — только после аудита (AUDIT.md),
@@ -30,6 +30,10 @@ BLOCKY_SHA256_X86_64="17b03f892346a160e9faf974ce68baae85fa4f2a94d7bf8ea52592a94b
 BLOCKY_SHA256_ARM64="1a07aa52b127d75d15584706c76843b9fa3706be133b0d7b96b2ca65ba4f561f"
 # конфиг Blocky и списки — из github.com/Cueuler/amneziawg_dns_adblock (закреплённый коммит)
 ADBLOCK_REPO="https://raw.githubusercontent.com/Cueuler/amneziawg_dns_adblock/3db27d269031c4c7a33ec8968316bf0e2c70a004"
+# Защита от сканеров (awgctl guard): списки сетей обновляются раз в сутки с main, каждый проверяется
+# (только CIDR, границы размера, не меньше половины прежнего) — непрошедший остаётся прежним.
+GUARD_LISTS="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public"
+GUARD_SOURCES="antiscanner:50:5000 skipa:50:5000 government_networks:2000:50000"   # имя:мин:макс записей
 ADBLOCK_FILES="config.yml:b2c8fef5cbc727390df9c2088207154a7bc502d54ce7e36533c4e0489c540e26 custom-deny.txt:a0f2a9566b0fb28bfe2aa8832ab15df0d6355e0edb69be72e23b4a6751274848 blocky.service:7845adb43b3e6823845e10f21a88ed54fa3993bb9fe7a57aed64539149dd4f1a"
 
 AD_DIR=/var/lib/awgctl
@@ -59,7 +63,7 @@ trap 'rc=$?; [[ $rc -ne 0 ]] && printf "Ошибка в строке %s (код 
 # ------------------------------------------------------------------ аргументы
 CMD=""; POS=(); DRY_RUN=0; AUTO_YES=0; PORT="${PORT:-}"; MOBILE="${MOBILE:-0}"; PROTOCOL="${PROTOCOL:-3.1}"
 ENDPOINT="${ENDPOINT:-}"; CLIENTS="${CLIENTS:-}"; ALLOW_BLOCKED="${ALLOW_BLOCKED:-0}"; SKIP_EXT="${SKIP_EXTERNAL_CHECK:-0}"
-SRV_NAME="${SERVER_NAME:-}"; WANT_ADBLOCK=""; WANT_BOT=""; TG_TOKEN="${AWGRAM_TOKEN:-}"; TG_ADMINS=""; DAYS=""; PSK=0; KEEP_PKGS="${KEEP_PACKAGES:-0}"; KEEP_IPV6="${KEEP_IPV6:-0}"; OBFS="${OBFS:-quic}"; DO_UPGRADE="${DO_UPGRADE:-1}"; CPS_I1=""; CPS_I2=""; CPS_I3=""; CPS_I4=""; CPS_I5=""; EXTRA=()
+SRV_NAME="${SERVER_NAME:-}"; WANT_ADBLOCK=""; WANT_BOT=""; WANT_GUARD=""; TG_TOKEN="${AWGRAM_TOKEN:-}"; TG_ADMINS=""; DAYS=""; PSK=0; KEEP_PKGS="${KEEP_PACKAGES:-0}"; KEEP_IPV6="${KEEP_IPV6:-0}"; OBFS="${OBFS:-quic}"; DO_UPGRADE="${DO_UPGRADE:-1}"; CPS_I1=""; CPS_I2=""; CPS_I3=""; CPS_I4=""; CPS_I5=""; EXTRA=()
 if [[ "${1:-}" == engine ]]; then CMD=engine; shift; EXTRA=("$@"); set --; fi   # всё дальше — как есть в manage_amneziawg.sh
 while (($#)); do
     case "$1" in
@@ -74,9 +78,11 @@ while (($#)); do
         --obfs=*) OBFS=${1#*=} ;;
         --no-upgrade) DO_UPGRADE=0 ;;
         --adblock) WANT_ADBLOCK=1 ;;
+        --guard) WANT_GUARD=1 ;;
+        --no-guard) WANT_GUARD=0 ;;
         --bot) WANT_BOT=1 ;;
         --tg-admins=*) TG_ADMINS=${1#*=}; WANT_BOT=1 ;;
-        --no-extras) WANT_ADBLOCK=0; WANT_BOT=0 ;;
+        --no-extras) WANT_ADBLOCK=0; WANT_BOT=0; WANT_GUARD=0 ;;
         --allow-blocked-ip) ALLOW_BLOCKED=1 ;;
         --skip-external-check) SKIP_EXT=1 ;;
         --days=*) DAYS=${1#*=} ;;
@@ -100,9 +106,9 @@ awgctl — AmneziaWG: установка и управление пользов�
 Установка
   awgctl install [--dry-run] [--name="Имя"] [--port=N | --mobile] [--protocol=3.1|2.0] [--clients=a,b]
                  [--endpoint=АДРЕС] [--keep-packages] [--keep-ipv6] [--allow-blocked-ip] [--skip-external-check]
-                 [--adblock] [--bot --tg-admins=ID] [--no-extras] [--obfs=quic|engine] [--no-upgrade]
+                 [--guard|--no-guard] [--adblock] [--bot --tg-admins=ID] [--no-extras] [--obfs=quic|engine] [--no-upgrade]
                  сначала обновит систему; случайный порт, IPv6 хоста выключен, лишние пакеты удаляются; спросит
-                 про блокировщик рекламы и Telegram-бот (или задай флагами)
+                 про защиту от сканеров, блокировщик рекламы и Telegram-бот (или задай флагами)
                  [-- флаги install_amneziawg.sh]
   awgctl status                  полный лог установки и дальше вживую до конца (Ctrl+C — выйти из просмотра)
   awgctl resume                  продолжить прерванную установку
@@ -128,6 +134,8 @@ awgctl — AmneziaWG: установка и управление пользов�
   awgctl obfs quic               новые уникальные I1-I5 под QUIC на сервер и во все профили
 
 Дополнения
+  awgctl guard [on|off|status]   не отвечать сканерам РКН и подсетям госорганов (ни на один порт)
+  awgctl guard update | allow <IP>   обновить списки сейчас / свой адрес в исключения
   awgctl adblock [on|off|status] блокировка рекламы и трекеров по DNS (Blocky + списки Hagezi)
   awgctl bot                     Telegram-бот awgram: пользователи с телефона
   awgctl bot fix                 бот падает с «manage_script не найден» — перевести его в режим root
@@ -220,7 +228,7 @@ repo_get() { # repo_get <путь в репо> <куда>
 state_save() {
     mkdir -p "$AD_DIR"; chmod 700 "$AD_DIR"
     {
-        printf 'PORT=%q\nPROTOCOL=%q\nENDPOINT=%q\nCLIENTS=%q\nMOBILE=%q\nKEEP_PKGS=%q\nKEEP_IPV6=%q\nSRV_NAME=%q\nWANT_ADBLOCK=%q\nWANT_BOT=%q\nTG_TOKEN=%q\nTG_ADMINS=%q\nOBFS=%q\nCPS_I1=%q\nCPS_I2=%q\nCPS_I3=%q\nCPS_I4=%q\nCPS_I5=%q\n' "$PORT" "$PROTOCOL" "$ENDPOINT" "$CLIENTS" "$MOBILE" "$KEEP_PKGS" "$KEEP_IPV6" "$SRV_NAME" "$WANT_ADBLOCK" "$WANT_BOT" "$TG_TOKEN" "$TG_ADMINS" "$OBFS" "$CPS_I1" "$CPS_I2" "$CPS_I3" "$CPS_I4" "$CPS_I5"
+        printf 'PORT=%q\nPROTOCOL=%q\nENDPOINT=%q\nCLIENTS=%q\nMOBILE=%q\nKEEP_PKGS=%q\nKEEP_IPV6=%q\nSRV_NAME=%q\nWANT_ADBLOCK=%q\nWANT_BOT=%q\nWANT_GUARD=%q\nTG_TOKEN=%q\nTG_ADMINS=%q\nOBFS=%q\nCPS_I1=%q\nCPS_I2=%q\nCPS_I3=%q\nCPS_I4=%q\nCPS_I5=%q\n' "$PORT" "$PROTOCOL" "$ENDPOINT" "$CLIENTS" "$MOBILE" "$KEEP_PKGS" "$KEEP_IPV6" "$SRV_NAME" "$WANT_ADBLOCK" "$WANT_BOT" "$WANT_GUARD" "$TG_TOKEN" "$TG_ADMINS" "$OBFS" "$CPS_I1" "$CPS_I2" "$CPS_I3" "$CPS_I4" "$CPS_I5"
         # пустой массив: printf '%q ' без аргументов печатает '' — это сломало бы установщик
         printf 'EXTRA=('; ((${#EXTRA[@]})) && printf '%q ' "${EXTRA[@]}"; printf ')\n'
         printf 'PUBLIC_IP=%q\n' "${PUBLIC_IP:-}"
@@ -487,6 +495,11 @@ post_check() {
     local up; up=$(apt-get -s upgrade 2>/dev/null | grep -c '^Inst ' || true)
     ((up == 0)) && ok "Обновлений системы не ждёт" || warn "Ждут обновления пакетов: $up (apt update && apt full-upgrade)"
     [[ -f /var/run/reboot-required ]] && warn "Нужна перезагрузка (обновлено ядро): reboot"
+    if guard_is_on; then
+        iptables -t mangle -C PREROUTING -j AWGCTL_GUARD 2>/dev/null && ok "Защита от сканеров включена" || fail "Защита от сканеров включена, но правила нет (awgctl guard status)"
+    else
+        log "    [..] Защита от сканеров выключена — включить: awgctl guard on"
+    fi
     PUBLIC_IP=${PUBLIC_IP:-$(detect_ip)}
     external_check
     log ""
@@ -562,6 +575,8 @@ rules_apply() { # отключённые пользователи: DROP их т�
         iptables -t nat -D PREROUTING -i awg0 -j AWGCTL_DNS 2>/dev/null || true
         iptables -t nat -F AWGCTL_DNS; iptables -t nat -X AWGCTL_DNS 2>/dev/null || true
     fi
+    # защита от сканеров: после перезагрузки наборы ipset пустые — собираются из сохранённых списков
+    if guard_is_on; then guard_rules_on || true; fi
 }
 rules_persist() { # после перезагрузки и после ufw reload (он сбрасывает встроенные цепочки)
     cat >/etc/systemd/system/awgctl-rules.service <<UNIT
@@ -688,8 +703,9 @@ do_uninstall() {
     fi
     iptables -t nat -D PREROUTING -i awg0 -j AWGCTL_DNS 2>/dev/null || true
     iptables -t nat -F AWGCTL_DNS 2>/dev/null || true; iptables -t nat -X AWGCTL_DNS 2>/dev/null || true
+    guard_rules_off
     command -v awgram-setup >/dev/null && log "    Telegram-бот остался: удалить — awgram-setup uninstall --purge"
-    rm -rf "$AD_DIR" /etc/cron.d/awgctl-rules /etc/systemd/system/awgctl-rules.service "$AD_BIN"
+    rm -rf "$AD_DIR" /etc/cron.d/awgctl-rules /etc/cron.d/awgctl-guard /etc/systemd/system/awgctl-rules.service "$AD_BIN"
     systemctl daemon-reload || true
     log "AmneziaWG и awgctl удалены."
 }
@@ -798,6 +814,198 @@ do_adblock() {
     esac
 }
 
+# ------------------------------------------------------------------ дополнения: защита от сканеров (guard)
+# Новые входящие соединения из подсетей сканеров РКН («СКИПА», ГРЧЦ) и госорганов отбрасываются
+# до любой службы: сервер не отвечает им ни на один порт, включая ping, SSH и порт AmneziaWG.
+# Ответы на соединения, которые открыли сам сервер или клиенты туннеля, не трогаются (ctstate NEW).
+# Идея и списки — как в guard у github.com/lib4u/vnm; списки github.com/shadow-netlab/traffic-guard-lists (MIT).
+guard_dir() { echo "$AD_DIR/guard"; }
+guard_is_on() { [[ -f "$(guard_dir)/on" ]]; }
+lines_in() { if [[ -s "$1" ]]; then grep -c . "$1" || true; else echo 0; fi; }
+
+# guard_parse <файл> — чистые CIDR по одному в строке; код ≠ 0, если в файле есть что-то кроме адресов
+# (весь источник отвергается) или слишком широкая сеть (меньше /8 для IPv4, /16 для IPv6).
+guard_parse() {
+    awk '
+        { sub(/\r$/, ""); gsub(/^[ \t]+|[ \t]+$/, "") }
+        $0 == "" || /^#/ { next }
+        /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(\/[0-9]+)?$/ {
+            split($0, a, "/"); n = split(a[1], o, ".")
+            for (i = 1; i <= 4; i++) if (o[i] > 255) { bad = 1; exit }
+            p = (a[2] == "" ? 32 : a[2]); if (p < 8 || p > 32) { bad = 1; exit }
+            print; next
+        }
+        /^[0-9A-Fa-f:]+(\/[0-9]+)?$/ && index($0, ":") {
+            split($0, a, "/"); p = (a[2] == "" ? 128 : a[2]); if (p < 16 || p > 128) { bad = 1; exit }
+            print; next
+        }
+        { bad = 1; exit }
+        END { exit bad }' "$1"
+}
+
+guard_update() { # скачать списки, проверить, сохранить; источник, который не прошёл проверку, остаётся прежним
+    local d tmp s name min max url n prev changed=0
+    d=$(guard_dir); mkdir -p "$d"; chmod 700 "$d"
+    tmp=$(mktemp -d)
+    for s in $GUARD_SOURCES; do
+        IFS=: read -r name min max <<<"$s"
+        url="$GUARD_LISTS/$name.list"
+        if ! curl -fsSL --max-time 60 -o "$tmp/raw" "$url"; then warn "guard: $name — не скачался, оставляю прежний"; continue; fi
+        if ! guard_parse "$tmp/raw" >"$tmp/$name"; then warn "guard: $name — в файле не только адреса, оставляю прежний"; continue; fi
+        n=$(lines_in "$tmp/$name")
+        if ((n < min || n > max)); then warn "guard: $name — $n записей, ожидалось $min–$max; оставляю прежний"; continue; fi
+        prev=$(lines_in "$d/$name.list")
+        if ((prev > 0 && n * 2 < prev)); then warn "guard: $name — записей стало меньше вдвое ($prev → $n); оставляю прежний"; continue; fi
+        cmp -s "$tmp/$name" "$d/$name.list" 2>/dev/null || changed=1
+        install -m 600 "$tmp/$name" "$d/$name.list"
+    done
+    rm -rf "$tmp"
+    ls "$d"/*.list >/dev/null 2>&1 || return 1
+    date +%s >"$d/updated"
+    if ((changed)) && guard_is_on; then guard_load_sets || { warn "guard: не удалось пересобрать наборы адресов"; return 1; }; fi
+    return 0
+}
+
+# Наборы ipset собираются из сохранённых списков и подменяются атомарно (swap), без окна без защиты.
+# Записи из allow — исключения (nomatch): например, свой адрес, если он оказался в списке госсетей.
+guard_load_sets() { # тихая: вызывается и из cron каждую минуту; код ≠ 0 — не собралось
+    local d fam set six
+    d=$(guard_dir)
+    command -v ipset >/dev/null || return 1
+    ls "$d"/*.list >/dev/null 2>&1 || return 1
+    for fam in inet inet6; do
+        set=awgctl_guard; six=0; [[ $fam == inet6 ]] && { set=awgctl_guard6; six=1; }
+        guard_restore_script "$d" "${set}_new" "$fam" "$six" | ipset restore 2>/dev/null \
+            || { ipset destroy "${set}_new" 2>/dev/null || true; return 1; }
+        ipset create "$set" hash:net family "$fam" hashsize 4096 maxelem 262144 -exist
+        ipset swap "${set}_new" "$set"
+        ipset destroy "${set}_new"
+    done
+}
+guard_restore_script() { # guard_restore_script <каталог> <набор> <inet|inet6> <0|1 — IPv6>
+    local f allow=()
+    echo "create $2 hash:net family $3 hashsize 4096 maxelem 262144 -exist"
+    echo "flush $2"
+    for f in "$1"/*.list; do
+        awk -v s="$2" -v six="$4" '(index($0, ":") > 0) == six { print "add " s " " $0 " -exist" }' "$f"
+    done
+    [[ -s "$1/allow" ]] && allow=("$1/allow")
+    ((${#allow[@]})) && awk -v s="$2" -v six="$4" 'NF && (index($0, ":") > 0) == six { print "add " s " " $1 " nomatch -exist" }' "${allow[@]}"
+    return 0
+}
+
+guard_v6() { [[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 1)" == 0 ]] && command -v ip6tables >/dev/null; }
+
+guard_rules_on() { # вызывается из rules_apply каждую минуту: ничего не пересоздаёт, если всё на месте (счётчики сохраняются)
+    ipset list -n awgctl_guard >/dev/null 2>&1 || guard_load_sets || return 1
+    local t=iptables set=awgctl_guard
+    for t in iptables ip6tables; do
+        set=awgctl_guard; [[ $t == ip6tables ]] && { guard_v6 || continue; set=awgctl_guard6; }
+        $t -t mangle -N AWGCTL_GUARD 2>/dev/null || true
+        $t -t mangle -C AWGCTL_GUARD -m conntrack --ctstate NEW -m set --match-set "$set" src -j DROP 2>/dev/null \
+            || { $t -t mangle -F AWGCTL_GUARD; $t -t mangle -A AWGCTL_GUARD -m conntrack --ctstate NEW -m set --match-set "$set" src -j DROP; }
+        $t -t mangle -C PREROUTING -j AWGCTL_GUARD 2>/dev/null || $t -t mangle -I PREROUTING 1 -j AWGCTL_GUARD
+    done
+}
+
+guard_rules_off() {
+    local t
+    for t in iptables ip6tables; do
+        command -v "$t" >/dev/null || continue
+        $t -t mangle -D PREROUTING -j AWGCTL_GUARD 2>/dev/null || true
+        $t -t mangle -F AWGCTL_GUARD 2>/dev/null || true; $t -t mangle -X AWGCTL_GUARD 2>/dev/null || true
+    done
+    if command -v ipset >/dev/null; then ipset destroy awgctl_guard 2>/dev/null || true; ipset destroy awgctl_guard6 2>/dev/null || true; fi
+}
+
+guard_cron() {
+    # раз в сутки, минута случайная — чтобы серверы не ходили за списками одновременно
+    printf '%s %s * * * root [ -x %s ] && %s guard update >/dev/null 2>&1\n' "$(rand_int 0 59)" "$(rand_int 2 5)" "$AD_BIN" "$AD_BIN" >/etc/cron.d/awgctl-guard
+}
+
+guard_self_check() { # свой адрес SSH в списке — добавить в исключения, иначе следующий вход не пройдёт
+    local ip=${SSH_CONNECTION:-}; ip=${ip%% *}
+    [[ -n "$ip" ]] || return 0
+    local set=awgctl_guard; [[ "$ip" == *:* ]] && set=awgctl_guard6
+    if ipset test "$set" "$ip" >/dev/null 2>&1; then
+        echo "$ip" >>"$(guard_dir)/allow"
+        guard_load_sets || true
+        warn "Твой адрес $ip есть в списках — добавлен в исключения ($(guard_dir)/allow)"
+    fi
+}
+
+guard_on() {
+    need_installed
+    hdr "Защита от сканеров РКН и подсетей госорганов"
+    command -v ipset >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ipset >/dev/null 2>&1 \
+        || { apt-get update -qq >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ipset >/dev/null 2>&1; } \
+        || die "Не удалось поставить ipset"
+    guard_update || die "Списки не скачались и сохранённых нет — защита не включена"
+    touch "$(guard_dir)/on"
+    guard_load_sets || die "Не удалось собрать наборы адресов"
+    guard_self_check
+    rules_persist; rules_apply
+    guard_cron
+    guard_status
+    log "    Списки обновляются раз в сутки (/etc/cron.d/awgctl-guard). Выключить: awgctl guard off"
+}
+
+guard_off() {
+    need_installed
+    rm -f "$(guard_dir)/on" /etc/cron.d/awgctl-guard
+    guard_rules_off
+    log "Защита от сканеров выключена. Включить: awgctl guard on"
+}
+
+guard_status() {
+    need_installed
+    if ! guard_is_on; then log "Защита от сканеров выключена. Включить: awgctl guard on"; return 0; fi
+    WARNS=0; FAILS=0
+    local d s name f n age pk
+    d=$(guard_dir)
+    for s in $GUARD_SOURCES; do
+        name=${s%%:*}; f="$d/$name.list"
+        n=$(lines_in "$f")
+        ((n > 0)) && ok "Список $name: $n сетей" || fail "Списка $name нет"
+    done
+    age=$(( ($(date +%s) - $(cat "$d/updated" 2>/dev/null || echo 0)) / 86400 ))
+    ((age <= 3)) && ok "Списки обновлены $( ((age == 0)) && echo сегодня || echo "$age дн. назад")" || warn "Списки не обновлялись $age дн. (awgctl guard update)"
+    if iptables -t mangle -C AWGCTL_GUARD -m conntrack --ctstate NEW -m set --match-set awgctl_guard src -j DROP 2>/dev/null \
+        && iptables -t mangle -C PREROUTING -j AWGCTL_GUARD 2>/dev/null; then
+        pk=$(iptables -t mangle -nvxL AWGCTL_GUARD 2>/dev/null | awk '$3 == "DROP" {print $1; exit}')
+        ok "Правило работает (IPv4), отброшено пакетов: ${pk:-0}"
+    else
+        fail "Правила нет — awgctl guard on"
+    fi
+    if guard_v6; then
+        ip6tables -t mangle -C PREROUTING -j AWGCTL_GUARD 2>/dev/null && ok "Правило работает (IPv6)" || fail "Нет правила для IPv6"
+    fi
+    [[ -s "$d/allow" ]] && log "    Исключения: $(tr '\n' ' ' <"$d/allow")"
+    return 0
+}
+
+guard_allow() {
+    need_installed
+    local a=${POS[1]:-}
+    [[ -n "$a" ]] || { log "Исключения: $(tr '\n' ' ' 2>/dev/null <"$(guard_dir)/allow" || echo нет)"; log "Добавить: awgctl guard allow <IP или сеть>"; return 0; }
+    printf '%s\n' "$a" | guard_parse /dev/stdin >/dev/null || die "«$a» — не IP-адрес или сеть"
+    mkdir -p "$(guard_dir)"
+    grep -qxF "$a" "$(guard_dir)/allow" 2>/dev/null || echo "$a" >>"$(guard_dir)/allow"
+    if guard_is_on; then guard_load_sets || die "Не удалось пересобрать наборы адресов"; fi
+    log "$a в исключениях: соединения с него проходят. Список: $(guard_dir)/allow"
+}
+
+do_guard() {
+    case "${POS[0]:-status}" in
+        on) guard_on ;;
+        off) guard_off ;;
+        status) guard_status ;;
+        update) need_installed; guard_update || die "Списки не обновились"; log "Списки обновлены"; guard_is_on || log "Защита выключена — включить: awgctl guard on" ;;
+        allow) guard_allow ;;
+        *) die "awgctl guard on|off|status|update|allow <IP>" ;;
+    esac
+}
+
 # ------------------------------------------------------------------ дополнения: Telegram-бот awgram
 bot_check() {
     sleep 3
@@ -845,9 +1053,15 @@ do_bot() {
 }
 
 ask_extras() { # в начале установки: после перезагрузок спросить уже не у кого
-    [[ -r /dev/tty && -t 0 ]] || { WANT_ADBLOCK=${WANT_ADBLOCK:-0}; WANT_BOT=${WANT_BOT:-0}; return 0; }
+    [[ -r /dev/tty && -t 0 ]] || { WANT_GUARD=${WANT_GUARD:-0}; WANT_ADBLOCK=${WANT_ADBLOCK:-0}; WANT_BOT=${WANT_BOT:-0}; return 0; }
     hdr "Дополнения (ставятся в конце установки)"
     local a
+    if [[ -z "$WANT_GUARD" ]]; then
+        log "    Защита от сканеров: сервер не отвечает подсетям сканеров РКН («СКИПА», ГРЧЦ) и госорганов —"
+        log "    ни на ping, ни на SSH, ни на порт VPN. Ответы на соединения клиентов не трогаются."
+        read -rp "    Включить защиту от сканеров (рекомендуется)? [Y/n] " a </dev/tty
+        [[ "$a" =~ ^([Nn]|нет|н)$ ]] && WANT_GUARD=0 || WANT_GUARD=1
+    fi
     if [[ -z "$WANT_ADBLOCK" ]]; then
         read -rp "    Блокировать рекламу и трекеры по DNS для всех клиентов (Blocky)? [y/N] " a </dev/tty
         [[ "$a" =~ ^([Yy]|да|д)$ ]] && WANT_ADBLOCK=1 || WANT_ADBLOCK=0
@@ -868,6 +1082,7 @@ ask_extras() { # в начале установки: после перезагр
 }
 
 install_extras() {
+    if [[ "${WANT_GUARD:-0}" == 1 ]]; then ( guard_on ) || warn "Защита от сканеров не включилась — повтори: awgctl guard on"; fi
     if [[ "${WANT_ADBLOCK:-0}" == 1 ]]; then ( adblock_on ) || warn "Блокировщик не поставился — повтори: awgctl adblock on"; fi
     if [[ "${WANT_BOT:-0}" == 1 ]]; then ( do_bot ) || warn "Бот не поставился — повтори: awgctl bot"; fi
     # токен больше не нужен в файле состояния
@@ -924,7 +1139,7 @@ do_install() {
     log "       — имя сервера в приложении: ${SRV_NAME:-AWG Server (по умолчанию движка)}"
     log "       — обфускация: $([[ "$OBFS" == quic ]] && echo "3.1 + свои I1-I5 под QUIC (уникальные для сервера)" || echo "как у движка (I1 под DNS)")"
     log "    3. Клиенты: ${CLIENTS:-my_phone, my_laptop (по умолчанию установщика)}"
-    log "    4. Дополнения: блокировщик рекламы — $([[ "${WANT_ADBLOCK:-0}" == 1 ]] && echo да || echo нет), Telegram-бот — $([[ "${WANT_BOT:-0}" == 1 ]] && echo да || echo нет)"
+    log "    4. Дополнения: защита от сканеров — $([[ "${WANT_GUARD:-0}" == 1 ]] && echo да || echo нет), блокировщик рекламы — $([[ "${WANT_ADBLOCK:-0}" == 1 ]] && echo да || echo нет), Telegram-бот — $([[ "${WANT_BOT:-0}" == 1 ]] && echo да || echo нет)"
     log "    5. Итоговая проверка. Лог: $AD_LOG"
     if ((DRY_RUN)); then log ""; log "--dry-run: ничего не изменено."; exit 0; fi
 
@@ -1150,6 +1365,7 @@ case "$CMD" in
     engine) need_installed; manage "${EXTRA[@]+"${EXTRA[@]}"}" ;;
     uninstall) do_uninstall ;;
     adblock) do_adblock ;;
+    guard) do_guard ;;
     obfs) do_obfs ;;
     bot) if [[ "${POS[0]:-}" == fix ]]; then need_root; bot_fix; else do_bot; fi ;;
     _rules) [[ -f "$SERVER_CONF" ]] && rules_apply ;;

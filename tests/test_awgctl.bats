@@ -133,12 +133,12 @@ STUB
 }
 
 @test "дополнения: без терминала по умолчанию не ставятся, флаги сохраняются" {
-    WANT_ADBLOCK=""; WANT_BOT=""
+    WANT_ADBLOCK=""; WANT_BOT=""; WANT_GUARD=""
     ask_extras </dev/null
-    [ "$WANT_ADBLOCK" = 0 ] && [ "$WANT_BOT" = 0 ]
-    WANT_ADBLOCK=1; WANT_BOT=""
+    [ "$WANT_ADBLOCK" = 0 ] && [ "$WANT_BOT" = 0 ] && [ "$WANT_GUARD" = 0 ]
+    WANT_ADBLOCK=1; WANT_BOT=""; WANT_GUARD=1
     ask_extras </dev/null
-    [ "$WANT_ADBLOCK" = 1 ]
+    [ "$WANT_ADBLOCK" = 1 ] && [ "$WANT_GUARD" = 1 ]
 }
 
 @test "bot: неверный токен или ID — отказ до скачивания" {
@@ -234,4 +234,35 @@ STUB
     [ "$(log_start_line)" = 3 ]
     run tail -n +"$(log_start_line)" "$AD_LOG"
     [[ "${lines[0]}" == *"awgctl v2.3.0"* ]] && [[ "$output" != *"старое"* ]] && [[ "$output" == *"вывод движка"* ]]
+}
+
+@test "guard: разбор списков — только CIDR, лишнее отвергает весь источник" {
+    printf '# коммент\n\n195.209.123.0/24\r\n  5.143.224.100/30\n10.0.0.1\n2001:db8::/32\n' >"$T/ok.list"
+    run guard_parse "$T/ok.list"
+    [ "$status" -eq 0 ]
+    [ "${lines[0]}" = 195.209.123.0/24 ] && [ "${lines[1]}" = 5.143.224.100/30 ] && [ "${lines[2]}" = 10.0.0.1 ] && [ "${lines[3]}" = 2001:db8::/32 ]
+    for bad in 'garbage' '0.0.0.0/0' '1.0.0.0/7' '300.1.1.1' '1.2.3.4/33' '2001::/8' '<html>'; do
+        printf '1.2.3.0/24\n%s\n' "$bad" >"$T/bad.list"
+        run guard_parse "$T/bad.list"; [ "$status" -ne 0 ]
+    done
+}
+
+@test "guard: наборы ipset — IPv4 и IPv6 раздельно, исключения как nomatch" {
+    mkdir -p "$T/g"
+    printf '195.209.123.0/24\n2001:db8::/32\n' >"$T/g/a.list"
+    printf '5.143.224.100/30\n' >"$T/g/b.list"
+    printf '195.209.123.7\n' >"$T/g/allow"
+    run guard_restore_script "$T/g" s4 inet 0
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"create s4 hash:net family inet "* && "$output" == *"add s4 195.209.123.0/24 -exist"* && "$output" == *"add s4 5.143.224.100/30 -exist"* ]]
+    [[ "$output" == *"add s4 195.209.123.7 nomatch -exist"* && "$output" != *"2001:db8"* ]]
+    run guard_restore_script "$T/g" s6 inet6 1
+    [[ "$output" == *"add s6 2001:db8::/32 -exist"* && "$output" != *"195.209"* ]]
+}
+
+@test "guard: источники и границы заданы, команда в справке, --no-extras выключает" {
+    for s in $GUARD_SOURCES; do [[ "$s" =~ ^[a-z_]+:[0-9]+:[0-9]+$ ]]; done
+    [[ "$GUARD_LISTS" == https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/* ]]
+    run bash "$ROOT/awgctl" help; [[ "$output" == *"awgctl guard"* && "$output" == *"--guard"* ]]
+    run bash "$ROOT/awgctl" guard bogus; [ "$status" -ne 0 ]
 }
